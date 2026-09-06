@@ -1,0 +1,31 @@
+# Build outputs
+bin/
+obj/
+dist/
+dist-setup/
+dist-standalone/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Node & UI
+node_modules/
+PermadBCode/UI/dist/
+PermadBCode/App/wwwroot/assets/
+PermadBCode/App/wwwroot/index.html
+.npm
+*.log
+
+# Installer payload artifacts
+installer/payload.zip
+installer/payload-standalone.zip
+installer/uninstaller/publish/
+
+# IDE & OS
+.vs/
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/

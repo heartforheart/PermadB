@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWindowsForms>true</UseWindowsForms>
+    <RootNamespace>PermadB.Installer</RootNamespace>
+    <AssemblyName>PermadB-Setup</AssemblyName>
+    <AssemblyTitle>PermadB Setup</AssemblyTitle>
+    <AssemblyDescription>PermadB Installation Wizard</AssemblyDescription>
+    <Version>1.0.0</Version>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="uninstaller\**" />
+    <EmbeddedResource Remove="uninstaller\**" />
+    <None Remove="uninstaller\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="payload.zip" />
+  </ItemGroup>
+
+</Project>
