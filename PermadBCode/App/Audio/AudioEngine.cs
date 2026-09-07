@@ -717,7 +717,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                         (DateTime.UtcNow - lastClamp).TotalSeconds > 4.0)
                     {
                         // Store the user's intended normal volume for this app
-                        _appBaselineVolume[procName] = Math.Max(0.7f, appVol);
+                        _appBaselineVolume[procName] = appVol;
                     }
 
                     // 1. Check user-defined manual cap for this application
@@ -732,57 +732,44 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                         }
                     }
                     // 2. Active App Sound Mixer Guard: Automatically level games outputting dangerous uncompressed dB (e.g. CS2 volume 1)
-                    else if (_config.Settings.Enabled && _config.Settings.AppMixerGuardEnabled)
+                    // Note: VoIP communication apps (Discord, Teams, Zoom, etc.) are excluded so user mixer levels are never altered
+                    else if (_config.Settings.Enabled && _config.Settings.AppMixerGuardEnabled && !isVoip)
                     {
-                        if (isVoip)
+                        // For Games & Media (CS2, browsers, media players, etc.):
+                        // Clamp if continuous sound exceeds the active profile's safe target (e.g. > 75 dBA continuous)
+                        var safeTargetContinuous = profile.TargetSafeDbSpl;
+
+                        if (appEstContinuousSpl > safeTargetContinuous + 0.5f && appPeakDbfs > -15.0f)
                         {
-                            // CRITICAL FOR DISCORD / VOIP:
-                            // Communication apps are for speech intelligibility. Voice audio must NEVER be muted or crushed!
-                            // If a voice app was previously clamped or reduced below baseline, restore it immediately to 100%!
-                            if (appVol < 0.98f)
+                            isAppUnsafe = true;
+                            _appLastClampTime[procName] = DateTime.UtcNow;
+
+                            var overshootDb = appEstContinuousSpl - safeTargetContinuous;
+                            var baseVol = _appBaselineVolume.GetValueOrDefault(procName, 1.0f);
+
+                            // Calculate target safe volume directly from baseline so it exactly hits safe target dB
+                            var safeScalar = (float)Math.Pow(10, -Math.Min(overshootDb, 16.0f) / 20.0);
+                            var targetSafeVol = Math.Clamp(baseVol * safeScalar, 0.25f, 1.0f);
+
+                            if (appVol > targetSafeVol + 0.02f)
                             {
-                                s.SimpleAudioVolume.Volume = 1.0f;
-                                appVol = 1.0f;
+                                s.SimpleAudioVolume.Volume = targetSafeVol;
+                                appVol = targetSafeVol;
+                                isAppClamped = true;
+                                _spikesClampedCount++;
+                                Console.WriteLine($"[AudioEngine] 🛡️ App Sound Mixer Guard leveled '{procName}' ({appEstContinuousSpl:F1} dBA) down to safe {targetSafeVol * 100:F0}%");
                             }
                         }
-                        else
+                        // Auto-recovery: When the game is no longer blasting loud audio for > 3.0 seconds, gently restore back toward baseline
+                        else if (_appLastClampTime.TryGetValue(procName, out var clampTime) && 
+                                 (DateTime.UtcNow - clampTime).TotalSeconds > 3.0)
                         {
-                            // For Games & Media (CS2, browsers, media players, etc.):
-                            // Clamp if continuous sound exceeds the active profile's safe target (e.g. > 75 dBA continuous)
-                            var safeTargetContinuous = profile.TargetSafeDbSpl;
-
-                            if (appEstContinuousSpl > safeTargetContinuous + 0.5f && appPeakDbfs > -15.0f)
+                            var baseVol = _appBaselineVolume.GetValueOrDefault(procName, 1.0f);
+                            if (appVol < baseVol - 0.04f)
                             {
-                                isAppUnsafe = true;
-                                _appLastClampTime[procName] = DateTime.UtcNow;
-
-                                var overshootDb = appEstContinuousSpl - safeTargetContinuous;
-                                var baseVol = _appBaselineVolume.GetValueOrDefault(procName, 1.0f);
-
-                                // Calculate target safe volume directly from baseline so it exactly hits safe target dB
-                                var safeScalar = (float)Math.Pow(10, -Math.Min(overshootDb, 16.0f) / 20.0);
-                                var targetSafeVol = Math.Clamp(baseVol * safeScalar, 0.25f, 1.0f);
-
-                                if (appVol > targetSafeVol + 0.02f)
-                                {
-                                    s.SimpleAudioVolume.Volume = targetSafeVol;
-                                    appVol = targetSafeVol;
-                                    isAppClamped = true;
-                                    _spikesClampedCount++;
-                                    Console.WriteLine($"[AudioEngine] 🛡️ App Sound Mixer Guard leveled '{procName}' ({appEstContinuousSpl:F1} dBA) down to safe {targetSafeVol * 100:F0}%");
-                                }
-                            }
-                            // Auto-recovery: When the game is no longer blasting loud audio for > 3.0 seconds, gently restore back toward baseline
-                            else if (_appLastClampTime.TryGetValue(procName, out var clampTime) && 
-                                     (DateTime.UtcNow - clampTime).TotalSeconds > 3.0)
-                            {
-                                var baseVol = _appBaselineVolume.GetValueOrDefault(procName, 1.0f);
-                                if (appVol < baseVol - 0.04f)
-                                {
-                                    var recoveredVol = Math.Min(baseVol, appVol + 0.04f);
-                                    s.SimpleAudioVolume.Volume = recoveredVol;
-                                    appVol = recoveredVol;
-                                }
+                                var recoveredVol = Math.Min(baseVol, appVol + 0.04f);
+                                s.SimpleAudioVolume.Volume = recoveredVol;
+                                appVol = recoveredVol;
                             }
                         }
                     }
