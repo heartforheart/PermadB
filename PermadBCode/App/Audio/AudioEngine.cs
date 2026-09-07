@@ -70,8 +70,20 @@ public class AudioEngine : IMMNotificationClient, IDisposable
     private bool _isCurrentlyClamping = false;
     private float _preDuckMasterVolume = -1.0f;
 
-    // Process name cache for per-app Windows Sound Mixer sessions
+    // Process name and baseline volume tracking for per-app Windows Sound Mixer sessions
     private readonly ConcurrentDictionary<int, string> _processNameCache = new();
+    private readonly ConcurrentDictionary<string, float> _appBaselineVolume = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, DateTime> _appLastClampTime = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, float> _appSmoothedPeak = new(StringComparer.OrdinalIgnoreCase);
+
+    // Voice communication applications where speech intelligibility must NEVER be crushed or muted
+    private static readonly HashSet<string> CommunicationApps = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Discord", "DiscordCanary", "DiscordPTB", "DiscordDevelopment",
+        "Slack", "Teams", "ms-teams", "Skype", "Zoom",
+        "TeamSpeak", "ts3client_win64", "ts3client_win32",
+        "Ventrilo", "Mumble", "Telegram", "WhatsApp", "Steam"
+    };
 
     public AudioMetrics LatestMetrics
     {
@@ -548,11 +560,25 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                 }
             }
 
+            // Hardware master volume attenuation in dB
+            float masterDbAtten;
+            try
+            {
+                masterDbAtten = endpointVol.MasterVolumeLevel;
+            }
+            catch
+            {
+                masterDbAtten = volScalar > 0.001f ? 20.0f * (float)Math.Log10(volScalar) : -60.0f;
+            }
+
             var peakDbfs = peak > 0.00001f ? 20.0f * (float)Math.Log10(peak) : -96.0f;
 
-            var volAttenDb = volScalar > 0.001f ? 20.0f * (float)Math.Log10(volScalar) : -60.0f;
-            var estimatedSpl = profile.EstimatedMaxDbSpl + peakDbfs + volAttenDb;
-            estimatedSpl = Math.Clamp(estimatedSpl, 25.0f, 120.0f);
+            // Physical acoustic peak SPL at user's ears (EstimatedMaxDbSpl is physical dBA at 0 dBFS & 0 dB attenuation)
+            var estimatedPeakSpl = profile.EstimatedMaxDbSpl + peakDbfs + masterDbAtten;
+            estimatedPeakSpl = Math.Clamp(estimatedPeakSpl, 25.0f, 120.0f);
+
+            // Continuous equivalent dBA (LAeq / RMS) for display and safety limits (typical audio crest factor ~11 dB)
+            var estimatedContinuousSpl = Math.Clamp(estimatedPeakSpl - 11.0f, 25.0f, 115.0f);
 
             var channelCount = meter.PeakValues.Count;
             var channelPeaks = new float[channelCount];
@@ -564,11 +590,12 @@ public class AudioEngine : IMMNotificationClient, IDisposable
             // Dynamic Transient Limiter (Ear Shield): Real-time micro-ducking on uncompressed spikes
             if (_config.Settings.Enabled && _config.Settings.DynamicLimiterEnabled)
             {
-                var threshold = _config.Settings.DynamicThresholdDbfs;
-                var safeSpl = profile.TargetSafeDbSpl;
+                var threshold = Math.Max(_config.Settings.DynamicThresholdDbfs, -1.5f);
+                // Allow transient peaks up to +14 dB above continuous RMS target (standard acoustic crest factor)
+                var safePeakSpl = profile.TargetSafeDbSpl + 14.0f;
 
-                // An audio burst is dangerous if peak dBFS hits threshold OR estimated SPL exceeds target limit
-                bool isUnsafeSpike = peakDbfs > threshold || estimatedSpl > safeSpl + 1.0f;
+                // An audio burst is dangerous if peak dBFS hits threshold AND estimated peak SPL exceeds safe peak ceiling
+                bool isUnsafeSpike = peakDbfs > threshold && estimatedPeakSpl > safePeakSpl;
 
                 if (isUnsafeSpike)
                 {
@@ -577,18 +604,18 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                     _spikesClampedCount++;
 
                     // Calculate overshoot in dB
-                    var overshoot = Math.Max(peakDbfs - threshold, estimatedSpl - safeSpl);
+                    var overshoot = Math.Max(peakDbfs - threshold, estimatedPeakSpl - safePeakSpl);
                     if (overshoot > 0.5f && !_isAdjustingVolume)
                     {
                         if (_preDuckMasterVolume < 0)
                         {
-                            _preDuckMasterVolume = volScalar;
+                            _preDuckMasterVolume = endpointVol.MasterVolumeLevelScalar;
                         }
 
-                        // Duck volume scalar smoothly based on overshoot (max 15 dB cut)
-                        var duckDb = Math.Clamp(overshoot, 2.0f, 15.0f);
+                        // Duck volume scalar based on overshoot from original pre-duck baseline (max 10 dB cut)
+                        var duckDb = Math.Clamp(overshoot, 1.5f, 10.0f);
                         var duckFactor = (float)Math.Pow(10, -duckDb / 20.0);
-                        var targetDuckScalar = Math.Clamp(volScalar * duckFactor, 0.05f, profile.SafeCeilingPercent / 100.0f);
+                        var targetDuckScalar = Math.Clamp(_preDuckMasterVolume * duckFactor, 0.25f, profile.SafeCeilingPercent / 100.0f);
 
                         if (targetDuckScalar < endpointVol.MasterVolumeLevelScalar)
                         {
@@ -607,7 +634,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                     }
                     OnPeakClamped?.Invoke(peakDbfs);
                 }
-                else if (_isCurrentlyClamping && (DateTime.UtcNow - _lastDuckTime).TotalMilliseconds > 350)
+                else if (_isCurrentlyClamping && (DateTime.UtcNow - _lastDuckTime).TotalMilliseconds > 250)
                 {
                     _isCurrentlyClamping = false;
                     // Smooth recovery to pre-duck volume level
@@ -659,16 +686,39 @@ public class AudioEngine : IMMNotificationClient, IDisposable
 
                     var appVol = s.SimpleAudioVolume.Volume;
                     var appMeter = s.AudioMeterInformation;
-                    var appPeak = appMeter.MasterPeakValue;
+                    var rawAppPeak = appMeter.MasterPeakValue;
                     var appMute = s.SimpleAudioVolume.Mute;
-                    var appPeakDbfs = appPeak > 0.00001f ? 20.0f * (float)Math.Log10(appPeak) : -96.0f;
 
-                    // Estimated real-world acoustic SPL produced by this specific app
-                    var appEstSpl = profile.EstimatedMaxDbSpl + appPeakDbfs + volAttenDb;
-                    appEstSpl = Math.Clamp(appEstSpl, 25.0f, 120.0f);
+                    // Smooth application peak using exponential moving average (100ms window)
+                    var smoothedPeak = _appSmoothedPeak.AddOrUpdate(
+                        procName,
+                        rawAppPeak,
+                        (_, prev) => Math.Max(rawAppPeak, prev * 0.75f + rawAppPeak * 0.25f)
+                    );
+
+                    var appPeakDbfs = smoothedPeak > 0.00001f ? 20.0f * (float)Math.Log10(smoothedPeak) : -96.0f;
+
+                    bool isVoip = CommunicationApps.Contains(procName);
+                    // Human voice has ~15 dB crest factor; games/media have ~11 dB crest factor
+                    float crestFactor = isVoip ? 15.0f : 11.0f;
+
+                    // Estimated real-world acoustic peak SPL produced by this specific app
+                    var appEstPeakSpl = profile.EstimatedMaxDbSpl + appPeakDbfs + masterDbAtten;
+                    appEstPeakSpl = Math.Clamp(appEstPeakSpl, 25.0f, 120.0f);
+
+                    // Continuous equivalent dBA (LAeq / RMS) for human display and safety monitoring
+                    var appEstContinuousSpl = Math.Clamp(appEstPeakSpl - crestFactor, 25.0f, 105.0f);
 
                     bool isAppClamped = false;
                     bool isAppUnsafe = false;
+
+                    // Update baseline volume when the app is quiet / normal and not clamped
+                    if (!_appLastClampTime.TryGetValue(procName, out var lastClamp) || 
+                        (DateTime.UtcNow - lastClamp).TotalSeconds > 4.0)
+                    {
+                        // Store the user's intended normal volume for this app
+                        _appBaselineVolume[procName] = Math.Max(0.7f, appVol);
+                    }
 
                     // 1. Check user-defined manual cap for this application
                     if (_config.Settings.AppVolumeOverrides.TryGetValue(procName, out var userCapPercent))
@@ -681,25 +731,58 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                             isAppClamped = true;
                         }
                     }
-
-                    // 2. Active App Sound Mixer Guard: Automatically clamp applications outputting in unsafe dB range
-                    if (_config.Settings.Enabled && _config.Settings.AppMixerGuardEnabled)
+                    // 2. Active App Sound Mixer Guard: Automatically level games outputting dangerous uncompressed dB (e.g. CS2 volume 1)
+                    else if (_config.Settings.Enabled && _config.Settings.AppMixerGuardEnabled)
                     {
-                        var safeTarget = profile.TargetSafeDbSpl;
-                        if (appEstSpl > safeTarget + 1.0f)
+                        if (isVoip)
                         {
-                            isAppUnsafe = true;
-                            var overshootDb = appEstSpl - safeTarget;
-                            var attenFactor = (float)Math.Pow(10, -Math.Min(overshootDb, 18.0f) / 20.0);
-                            var safeAppVol = Math.Clamp(appVol * attenFactor, 0.05f, 1.0f);
-
-                            if (safeAppVol < appVol - 0.02f)
+                            // CRITICAL FOR DISCORD / VOIP:
+                            // Communication apps are for speech intelligibility. Voice audio must NEVER be muted or crushed!
+                            // If a voice app was previously clamped or reduced below baseline, restore it immediately to 100%!
+                            if (appVol < 0.98f)
                             {
-                                s.SimpleAudioVolume.Volume = safeAppVol;
-                                appVol = safeAppVol;
-                                isAppClamped = true;
-                                _spikesClampedCount++;
-                                Console.WriteLine($"[AudioEngine] 🛡️ Sound Mixer Guard clamped '{procName}' ({appEstSpl:F1} dBA) down to {safeAppVol * 100:F0}%");
+                                s.SimpleAudioVolume.Volume = 1.0f;
+                                appVol = 1.0f;
+                            }
+                        }
+                        else
+                        {
+                            // For Games & Media (CS2, browsers, media players, etc.):
+                            // Clamp if continuous sound exceeds the active profile's safe target (e.g. > 75 dBA continuous)
+                            var safeTargetContinuous = profile.TargetSafeDbSpl;
+
+                            if (appEstContinuousSpl > safeTargetContinuous + 0.5f && appPeakDbfs > -15.0f)
+                            {
+                                isAppUnsafe = true;
+                                _appLastClampTime[procName] = DateTime.UtcNow;
+
+                                var overshootDb = appEstContinuousSpl - safeTargetContinuous;
+                                var baseVol = _appBaselineVolume.GetValueOrDefault(procName, 1.0f);
+
+                                // Calculate target safe volume directly from baseline so it exactly hits safe target dB
+                                var safeScalar = (float)Math.Pow(10, -Math.Min(overshootDb, 16.0f) / 20.0);
+                                var targetSafeVol = Math.Clamp(baseVol * safeScalar, 0.25f, 1.0f);
+
+                                if (appVol > targetSafeVol + 0.02f)
+                                {
+                                    s.SimpleAudioVolume.Volume = targetSafeVol;
+                                    appVol = targetSafeVol;
+                                    isAppClamped = true;
+                                    _spikesClampedCount++;
+                                    Console.WriteLine($"[AudioEngine] 🛡️ App Sound Mixer Guard leveled '{procName}' ({appEstContinuousSpl:F1} dBA) down to safe {targetSafeVol * 100:F0}%");
+                                }
+                            }
+                            // Auto-recovery: When the game is no longer blasting loud audio for > 3.0 seconds, gently restore back toward baseline
+                            else if (_appLastClampTime.TryGetValue(procName, out var clampTime) && 
+                                     (DateTime.UtcNow - clampTime).TotalSeconds > 3.0)
+                            {
+                                var baseVol = _appBaselineVolume.GetValueOrDefault(procName, 1.0f);
+                                if (appVol < baseVol - 0.04f)
+                                {
+                                    var recoveredVol = Math.Min(baseVol, appVol + 0.04f);
+                                    s.SimpleAudioVolume.Volume = recoveredVol;
+                                    appVol = recoveredVol;
+                                }
                             }
                         }
                     }
@@ -710,11 +793,11 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                         ProcessName = procName,
                         DisplayName = string.IsNullOrWhiteSpace(s.DisplayName) ? procName : s.DisplayName,
                         VolumePercent = (float)Math.Round(appVol * 100.0f, 1),
-                        PeakValue = (float)Math.Round(appPeak, 3),
+                        PeakValue = (float)Math.Round(smoothedPeak, 3),
                         PeakDbfs = (float)Math.Round(appPeakDbfs, 1),
-                        EstimatedDbSpl = (float)Math.Round(appEstSpl, 1),
+                        EstimatedDbSpl = (float)Math.Round(appEstContinuousSpl, 1),
                         IsMuted = appMute,
-                        IsClamped = isAppClamped,
+                        IsClamped = isAppClamped || (_appLastClampTime.TryGetValue(procName, out var ct) && (DateTime.UtcNow - ct).TotalSeconds < 2.5),
                         IsUnsafe = isAppUnsafe
                     });
                 }
@@ -725,7 +808,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
             {
                 MasterPeak = peak,
                 PeakDbfs = (float)Math.Round(peakDbfs, 1),
-                EstimatedDbSpl = (float)Math.Round(estimatedSpl, 1),
+                EstimatedDbSpl = (float)Math.Round(estimatedContinuousSpl, 1),
                 CurrentVolumePercent = (float)Math.Round(volScalar * 100.0f, 1),
                 SafeCeilingPercent = profile.SafeCeilingPercent,
                 IsClamping = _isCurrentlyClamping,
