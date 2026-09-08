@@ -34,18 +34,20 @@ Permanent hearing damage and tinnitus are irreversible. Modern audio devices and
 ## 🔬 How PermadB Protects Your Hearing
 
 ### 1. The Acoustic Challenge: Digital $dBFS$ vs. Real-World $dB\text{ SPL}$
-* **Digital Volume ($dBFS$):** Windows only sees digital values from $-\infty$ to $0\text{ dBFS}$. It has no awareness of whether you plugged in sensitive in-ear monitors or quiet desktop speakers.
-* **Acoustic Pressure ($dB\text{ SPL}$):** This is the physical sound pressure hitting your eardrum. Prolonged exposure to $\ge 85\text{ dBA}$ causes irreversible cochlear hair cell loss.
-* **PermadB's Solution:** Combines per-device acoustic profiling, a 10-second reference calibration wizard, and a double-layer hardware volume governor to bridge digital audio to real-world ear safety.
+* **Digital Volume ($dBFS$):** Windows only processes digital PCM samples from $-\infty$ to $0\text{ dBFS}$. It has no awareness of headphone sensitivity or impedance.
+* **Acoustic Pressure ($dB\text{ SPL}$):** Physical sound pressure hitting your eardrums. Sustained exposure to $\ge 85\text{ dBA}$ causes permanent sensorineural hearing loss and tinnitus.
+* **PermadB's Solution:** Bridges digital audio to acoustic ear safety by enforcing a strict brickwall digital ceiling directly in the Windows audio pipeline, mapped through a **2.5-power perceptual acoustic curve**.
 
-### 2. Double-Layer Safety Net ($< 15\text{ ms}$ Interception)
-* **Layer 1: Real-time Event Interception (`IAudioEndpointVolumeCallback`)**  
-  Intercepts hardware volume changes at the driver level in under **15 milliseconds**. If an external app, keyboard knob, or accidental scroll tries to spike the volume past your safe ceiling, PermadB snaps it right back down.
-* **Layer 2: Proactive 50Hz Watchdog Loop**  
-  A dedicated background MTA audio thread polls the audio endpoint 50 times per second, ensuring that even if an event packet is dropped by Windows COM, the volume can never stay above your ceiling for more than $20\text{ ms}$.
+### 2. Native Lookahead Brickwall Peak Limiter (`PermadBApo.dll`)
+* **Zero Volume Slider Manipulation**: PermadB **never** ducks, moves, or changes Windows Master Volume or per-app mixer sliders. Your Windows volume slider stays permanently untouched at **100%**.
+* **Lookahead Delay Buffer ($\sim 5\text{ ms}$)**: Intercepts upcoming audio spikes inside `audiodg.exe` *before* they are sent to the DAC/speakers.
+* **Monotonic Deque Peak Tracking**: Evaluates multichannel linked peaks in $O(1)$ amortized time with zero heap allocations during real-time audio processing.
+* **Zero-Overshoot Safety Clamp**: Output samples are mathematically constrained to $\le \text{Ceiling}$, ensuring zero audio clipping and zero loud transient shocks.
 
-### 3. Dynamic Transient Limiter (Ear Shield)
-Samples hardware peak meters (`IAudioMeterInformation`) at 50Hz. When an uncompressed jumpscare, gunshot burst, or loud video ad spikes toward clipping, PermadB applies intelligent micro-ducking to protect your ears, smoothly recovering when normal levels resume.
+### 3. Perceptual Acoustic Decibel Taper
+Human hearing perceives volume logarithmically rather than linearly. PermadB maps slider percentages to digital ceilings using:
+$$\text{Linear Ceiling} = 0.89125 \times \left(\frac{\text{Percent}}{100}\right)^{2.5} \implies \text{dBFS} = 20\log_{10}(\text{Linear Ceiling})$$
+This guarantees that setting a 30% or 50% ceiling applies genuine, powerful attenuation (e.g. $-27.1\text{ dBFS}$ at 30%) to quiet loud web audio (like YouTube) to safe, comfortable levels.
 
 ---
 
@@ -56,22 +58,22 @@ Samples hardware peak meters (`IAudioMeterInformation`) at 50Hz. When an uncompr
   * 🟢 **Green Shield**: Active & Protecting.
   * 🟡 **Amber Shield**: Custom User Ceiling Active.
   * ⚪ **Gray Shield with Red Slash**: Protection Bypassed.
-* **🔒 Strict Ceiling Guard:**  
-  Enforces your safe volume ceiling in under 15ms. You can freely turn down your volume to quieter levels anytime (lower = safer), but if an accidental bump, application, or volume knob tries to push past your safe limit, PermadB immediately clamps it back down.
-* **🎮 Per-Application Sound Mixer Guard (Game & App Leveler):**  
-  Actively monitors every application running in the Windows Sound Mixer (`cs2.exe`, `discord.exe`, `chrome.exe`, `spotify.exe`). If any game (like CS2 at `volume 1` console gain) or software outputs dangerously loud sound exceeding your safe preset limit, PermadB automatically levels and clamps that specific application's mixer slider down to keep your ears safe.
+* **🔒 Pure Digital Limiting (Zero Slider Tampering):**  
+  Windows Master Volume and Volume Mixer sliders remain completely static at 100%. All limiting occurs on raw PCM audio inside `audiodg.exe`.
+* **🎧 Presets Calibrated for Hearing Health:**  
+  * **Safe Ears (65% / ~75 dBA)**: Default daily listening mode compliant with WHO safe exposure guidelines.
+  * **Night / Relaxed (50% / ~68 dBA)**: Fatigue-free, ultra-quiet late-night listening.
+  * **Studio Dynamic (85% / ~82 dBA)**: Wide dynamic range for mastering and cinema while capping sudden explosions and loud ads.
+* **⚡ Sub-Millisecond Lookahead Transient Protection:**  
+  Protects against sudden discord screaming, gaming gunshots, accidental full-volume web ads, and jumpscares.
 * **🎧 Smart Device Auto-Switching:**  
-  Automatically detects when you switch from headphones to speakers or HDMI and instantly applies that device's saved safe profile.
-* **🌐 Multi-Device Broadcast Guard (DJ / PA / All Outputs):**  
-  Enforces your safe decibel ceiling across **all connected audio devices simultaneously**. Perfect for live DJ setups (VirtualDJ, Serato, Traktor), venues, big PA speakers, and cue headphones so no output can ever blast deafening audio.
-* **🎤 Microphone Feedback & Spikes Guard:**  
-  Monitors microphone input gain (`DataFlow.Capture`) to prevent sudden shouting, singing peaks, and feedback squeals from blowing through the speakers.
-* **🎛️ 10-Second Calibration Wizard with All-Device Sync:**  
-  Features a built-in soothing reference tone (-18 dBFS) with a 1-click **"Enforce Across All Connected Devices"** toggle to synchronize your safe acoustic baseline across every speaker and headphone.
+  Automatically detects when you switch between headphones, speakers, or USB headsets and maintains individual safe profiles per device.
+* **🔄 Lock-Free Shared-Memory Auto-Sync:**  
+  PermadB communicates with `audiodg.exe` via high-speed memory-mapped shared memory. If `audiodg.exe` restarts or a new stream opens, PermadB automatically resynchronizes the ceiling in $< 20\text{ ms}$.
 * **🖱️ Instant Right-Click Tray Menu:**  
-  Toggle protection on/off, switch presets, lock volume, toggle all-device broadcast, open the dashboard, or configure Windows startup with a single click.
-* **📊 Modern Web Dashboard:**  
-  Fluid 50Hz stereo LED VU meters, digital dBFS readouts, estimated acoustic dBA SPL, connected device counts, and daily hearing protection stats.
+  Toggle protection, switch presets, set custom levels, open dashboard, or configure Windows autostart with a single click.
+* **📊 Modern Web Dashboard (React 19 + Vite):**  
+  Fluid 50Hz stereo LED VU meters, digital dBFS readouts, estimated acoustic dBA SPL, and real-time limiter gain reduction readouts.
 
 ---
 
@@ -79,21 +81,17 @@ Samples hardware peak meters (`IAudioMeterInformation`) at 50Hz. When an uncompr
 
 For DJs, event hosts, and live audio performers:
 
-### 1. Multi-Endpoint Broadcast Protection
+### 1. Master & Cue Protection
 DJ setups split audio into several physical channels:
 * **Master Output:** Sent to high-wattage PA speakers, subwoofers, or amplifiers.
 * **Cue Output:** Sent to DJ headphones for track monitoring.
 * **Booth Monitors:** Secondary stage speakers.
-* **Microphone Input:** The host/singer's mic plugged into the audio interface or USB port.
 
-When **"Protect All Connected Devices"** is toggled, PermadB simultaneously locks every single connected output to your designated safe ceiling. If anyone accidentally spins the master output knob to 100% or bumps the system volume slider, PermadB snaps it right back in $< 15\text{ ms}$.
+Because PermadB installs as an Audio Processing Object (APO) directly into the Windows Audio Engine rendering chain, all audio streams routed through Windows WASAPI are automatically limited at the PCM level. Even if master software output gains or track gains are driven into digital clipping ($0.0\text{ dBFS}$), PermadB's lookahead brickwall limiter clamps the signal to your safe listening ceiling with zero harmonic distortion.
 
-### 2. Microphone Feedback & Spikes Guard
-When a performer sings or speaks closely into a microphone, sudden shouts or proximity feedback squeals can blast ears through the PA system. PermadB monitors Windows capture endpoints (`DataFlow.Capture`) and clamps microphone gain/volume scalar so it can never exceed the safe ceiling.
-
-### 3. VirtualDJ / DJ Software Audio Driver Tip
-* **WASAPI Mode (Recommended):** Set VirtualDJ's audio engine to **WASAPI** (the Windows default). In this mode, audio routes through Windows CoreAudio, giving PermadB 100% protection over the master output, headphones, and dynamic limiter.
-* **ASIO Drivers:** If your DJ hardware requires low-latency ASIO drivers, note that ASIO bypasses the Windows volume mixer. To ensure PermadB can protect your audience and ears, select **WASAPI** or **DirectX / CoreAudio** inside VirtualDJ Settings -> Audio.
+### 2. VirtualDJ / DJ Software Audio Driver Tip
+* **WASAPI Mode (Recommended):** Set your DJ software's audio engine to **WASAPI** (the Windows default). In this mode, audio routes through the Windows Audio Engine (`audiodg.exe`), ensuring PermadB's lookahead limiter protects both the master PA outputs and cue headphones.
+* **ASIO Drivers:** Note that low-latency ASIO bypasses the Windows Audio Engine entirely. To ensure PermadB can protect your audience and ears, select **WASAPI Exclusive** or **DirectX / CoreAudio** inside your DJ software's audio settings.
 
 ---
 
@@ -112,12 +110,16 @@ The World Health Organization (WHO) and NIOSH recommend a maximum weekly noise d
 
 ## 🎛️ Safe Listening Presets
 
-| Preset | Headphones Cap | Speakers Cap | Target Acoustic Level | Best For |
-| :--- | :--- | :--- | :--- | :--- |
-| 🛡️ **Safe Ears (Default)** | **65%** | **70%** | **~75 dBA** | Everyday listening, YouTube, gaming, all-day work sessions |
-| 🌙 **Night / Relaxed** | **40%** | **45%** | **~60 dBA** | Late-night listening, podcasts, zero-fatigue quiet sessions |
-| 🎧 **Studio / Dynamic** | **80%** | **85%** | **~85 dBA** | Critical mixing, dynamic film scores, wide dynamic range |
-| ⚙️ **Custom Ceiling** | **30% – 95%** | **30% – 95%** | **User defined** | Manually set via tray quick submenu or dashboard slider |
+PermadB translates user listening presets directly into digital brickwall ceilings using a **2.5-power perceptual acoustic curve** ($\text{Linear} = 0.89125 \times (\text{Percent}/100)^{2.5}$):
+
+| Preset | Slider % | Digital Brickwall Ceiling | Gain Reduction on Full-Scale ($0\text{ dBFS}$) | Est. Headphone Output ($\text{dBA SPL}$)* | Best For | Auditory Safety Profile |
+| :--- | :---: | :---: | :---: | :---: | :--- | :--- |
+| 🛡️ **Safe Ears (Default)** | **65%** | **$-10.3\text{ dBFS}$** ($0.3039$) | **$-9.3\text{ dB}$** | **$\sim 72 - 75\text{ dBA}$** | Everyday listening, YouTube, gaming, work | **WHO Safe Listening Standard.** Infinite, non-damaging daily listening. |
+| 🌙 **Night / Relaxed** | **50%** | **$-16.0\text{ dBFS}$** ($0.1575$) | **$-15.0\text{ dB}$** | **$\sim 65 - 68\text{ dBA}$** | Late night, audiobooks, voice calls | Ultra-quiet, fatigue-free listening with zero ear strain. |
+| 🎧 **Studio Dynamic** | **85%** | **$-4.5\text{ dBFS}$** ($0.5937$) | **$-3.5\text{ dB}$** | **$\sim 80 - 82\text{ dBA}$** | Music production, critical mixing, cinema | High dynamic range; clamps loud ads and gunshot bursts while preserving transients. |
+| ⚙️ **Custom Ceiling** | **10% – 100%** | **$-51.0$ to $-1.0\text{ dBFS}$** | **$-50.0$ to $0.0\text{ dB}$** | **User defined** | Granular user control | Fully custom ceiling configured via system tray or dashboard slider. |
+
+*\*Estimated on typical consumer gaming headsets / IEMs (such as HyperX Cloud III Wireless at $100\text{ dB SPL / 1 mW}$ sensitivity) with Windows Master Volume static at 100%.*
 
 ---
 
@@ -125,40 +127,89 @@ The World Health Organization (WHO) and NIOSH recommend a maximum weekly noise d
 
 ```mermaid
 flowchart TB
-    subgraph WindowsAudio["Windows Audio Subsystem"]
-        HardwareEndpoint["Audio Endpoint (Headphones / Speakers)"]
-        WASAPI["Windows Core Audio API (WASAPI)"]
-        HardwareEndpoint <--> WASAPI
-    end
-
-    subgraph CoreAudioApp["PermadB Core Audio Application (C# .NET 9)"]
-        MTAThread["Dedicated MTA Audio Thread (50Hz Loop)"]
-        VolumeGovernor["Hardware Volume Governor & Limiter"]
-        DeviceWatcher["IMMNotificationClient (Device Auto-Switch)"]
-        TransientShield["Dynamic Peak Transient Limiter"]
+    subgraph AudioPipeline["Windows 11 Audio Subsystem (audiodg.exe)"]
+        AudioApp["Audio Sources (YouTube, Spotify, Games, Discord, Media Players)"]
+        WinAudioEngine["Windows Audio Engine (audiodg.exe)"]
+        APO["PermadB Limiter APO (PermadBApo.dll - Endpoint Effect)"]
+        AudioEndpoint["Playback Device (Headphones / Speakers / USB Audio)"]
         
-        WASAPI <--> MTAThread
-        MTAThread --> VolumeGovernor
-        MTAThread --> DeviceWatcher
-        MTAThread --> TransientShield
-
-        TrayManager["Windows Forms System Tray (NotifyIcon)"]
-        HttpServer["Embedded HTTP & SSE Server (:49220)"]
-
-        MTAThread <--> TrayManager
-        MTAThread <--> HttpServer
+        AudioApp -->|"Digital Audio Stream (PCM, 0.0 dBFS Peak)"| WinAudioEngine
+        WinAudioEngine -->|"Input PCM Buffer"| APO
+        APO -->|"Brickwall-Limited PCM Buffer (<= Target Ceiling)"| WinAudioEngine
+        WinAudioEngine -->|"Safe Audio Output (Windows Volume = 100% Static)"| AudioEndpoint
     end
 
-    subgraph DashboardUI["PermadB Dashboard UI (React 19 + Vite)"]
-        VUMeter["Real-time Stereo VU Meter (50Hz SSE)"]
-        Calibrator["10s Web Audio Calibration Assistant"]
-        PresetSelector["Safe Preset & Slider Controls"]
+    subgraph APOCore["Native APO DSP Engine (PermadBLimiter.h - C++17)"]
+        LookaheadDelay["Circular Delay Buffer (~5 ms lookahead, zero heap allocation)"]
+        PeakDetector["O(1) Monotonic Deque Running Max Peak Detector"]
+        GainComputer["Exponential Gain Smoothing (Lookahead Attack / Release)"]
+        HardClamp["Zero-Overshoot Safety Clamp (Absolute Ceiling Cap)"]
 
-        HttpServer <--> VUMeter
-        HttpServer <--> Calibrator
-        HttpServer <--> PresetSelector
+        LookaheadDelay --> PeakDetector
+        PeakDetector --> GainComputer
+        GainComputer --> HardClamp
     end
+
+    subgraph IPC["Lock-Free Inter-Process Communication (Shared Memory)"]
+        ShmemFile["Memory-Mapped File (C:\\Users\\Public\\permadb_apo_telemetry.dat)"]
+        Controls["Dynamic Controls: TargetCeilingLinear, TargetCeilingDbfs, IsEnabled, CommandSeq"]
+        Telemetry["APO Telemetry: InPeak, OutPeak, GainReductionDb, LimiterActivations, LastTick"]
+
+        ShmemFile --- Controls
+        ShmemFile --- Telemetry
+    end
+
+    subgraph PermadBApp["PermadB Desktop Application (C# .NET 9)"]
+        AudioEngineCS["AudioEngine.cs (50 Hz Worker Loop & Auto-Sync Engine)"]
+        TrayManager["System Tray Manager (NotifyIcon & Preset Menu)"]
+        ConfigMgr["ConfigManager (Settings, Device Profiles, Clean Reinstall Defaults)"]
+        HttpServer["Embedded HTTP API & SSE Server (:49220)"]
+
+        TrayManager <--> ConfigMgr
+        AudioEngineCS <--> ConfigMgr
+        AudioEngineCS <--> HttpServer
+    end
+
+    subgraph UI["Dashboard UI (React 19 + Vite)"]
+        Meters["50 Hz Real-Time Decibel & Gain Reduction Meters"]
+        Presets["Preset Selectors: Safe Ears (65%), Night (50%), Studio (85%)"]
+        CustomSlider["Acoustic Perceptual Custom Slider (10% - 100%)"]
+
+        HttpServer <--> Meters
+        HttpServer <--> Presets
+        HttpServer <--> CustomSlider
+    end
+
+    APO <-->|"Read Controls / Write Telemetry (Zero Mutex)"| ShmemFile
+    AudioEngineCS <-->|"Write Controls / Read Telemetry (50 Hz Auto-Sync)"| ShmemFile
+    APO --- APOCore
 ```
+
+### Architectural Principles & Invariants
+
+1. **Volume Immutability Invariant**:
+   * PermadB **never touches, ducks, moves, or alters Windows Master Volume or per-app Volume Mixer sliders**.
+   * Windows Master Volume remains permanently static at **100%**.
+   * All hearing protection is performed exclusively on the raw digital PCM audio stream inside `audiodg.exe` by the native `PermadBApo.dll` Endpoint Effect (EFX) APO.
+
+2. **Real-Time Lookahead Brickwall Peak Limiter (`PermadBLimiter.h`)**:
+   * **Lookahead Delay**: Employs a $\sim 5\text{ ms}$ circular buffer (240 frames at 48 kHz). This allows the limiter to inspect upcoming audio spikes *before* they are output, ramping down gain smoothly so sudden transients never clip or shock the ear.
+   * **Monotonic Deque Peak Tracking**: Evaluates multichannel linked peak values in $O(1)$ amortized time with zero allocations during `APOProcess()`.
+   * **Gain Smoothing**: Uses separate attack and exponential release time constants to eliminate audible distortion, pumping, or clicking artifacts.
+   * **Zero-Overshoot Safety Clamp**: Final hard safety constraint guarantees not a single sample exceeds the configured linear ceiling.
+
+3. **Perceptual Acoustic Decibel Taper**:
+   * Human hearing perception is logarithmic. A naive linear 30% volume slider ($0.30$ linear $= -10.46\text{ dBFS}$) is only $10.5\text{ dB}$ below maximum volume, which fails to attenuate normal web audio (e.g. YouTube at $-12\text{ dBFS}$).
+   * PermadB applies a **2.5-power perceptual curve**:
+     $$\text{Linear Ceiling} = 0.89125 \times \left(\frac{\text{Percent}}{100}\right)^{2.5} \implies \text{dBFS} = 20\log_{10}(\text{Linear Ceiling})$$
+   * At 30%, the ceiling is $-27.1\text{ dBFS}$, applying an immediate $-15\text{ dB}$ brickwall cut to loud web streams.
+
+4. **Proactive Auto-Sync & Cold-Boot Resilience**:
+   * PermadB proactively initializes the shared memory telemetry buffer with `Magic = "PERM"` and the active preset ceiling before `audiodg.exe` starts rendering.
+   * A continuous 50 Hz watchdog inspects `audiodg.exe`'s configured ceiling. If `audiodg.exe` cold-boots, restarts, or drifts, PermadB automatically resynchronizes the ceiling within $20\text{ ms}$.
+
+5. **Clean Reinstall Guarantee**:
+   * Installer and uninstaller automatically clear stale `%APPDATA%\PermadB\config.json` caches so every new installation defaults cleanly to **Safe Ears (65%)**.
 
 ---
 
