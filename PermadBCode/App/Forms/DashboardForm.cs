@@ -285,7 +285,7 @@ public class DashboardForm : Form
 
         _customCeilingLabel = new Label
         {
-            Text = "Custom Limiter Ceiling: 65% (75 dBA)",
+            Text = "Custom Ceiling: 65% (75 dBA)",
             Font = new Font("Segoe UI", 9.0f, FontStyle.Bold),
             ForeColor = _textWhite,
             Location = new Point(12, 8),
@@ -364,7 +364,7 @@ public class DashboardForm : Form
 
         var hintLabel = new Label
         {
-            Text = "💡 Windows audio stays at 100%. The 10ms Master Limiter automatically prevents hearing damage without altering individual app volume levels or microphones.",
+            Text = "💡 Safe volume ceiling protects your hearing from dangerous spikes. The volume slider stays steady and never jumps up or down.",
             Font = new Font("Segoe UI", 8.0f, FontStyle.Italic),
             ForeColor = _textMuted,
             Location = new Point(12, 100),
@@ -473,7 +473,7 @@ public class DashboardForm : Form
         if (_isUpdatingUi) return;
         var percent = _customCeilingSlider.Value;
         var estDb = 50.0f + (percent / 100.0f) * 38.0f;
-        _customCeilingLabel.Text = $"Custom Limiter Ceiling: {percent}% ({estDb:F0} dBA)";
+        _customCeilingLabel.Text = $"Custom Ceiling: {percent}% ({estDb:F0} dBA)";
         _engine.SetSafeCeiling(percent);
         _lastKnownPreset = "custom";
         UpdatePresetCards();
@@ -501,7 +501,7 @@ public class DashboardForm : Form
 
         // Update device label
         var icon = profile.DeviceType == "headphones" ? "🎧" : "🔊";
-        var devText = $"{icon} {profile.DeviceName} (Baseline: 100%)";
+        var devText = $"{icon} {profile.DeviceName} (Ceiling: {profile.SafeCeilingPercent:F0}%)";
         if (_deviceInfoLabel.Text != devText)
         {
             _deviceInfoLabel.Text = devText;
@@ -524,7 +524,7 @@ public class DashboardForm : Form
                 {
                     _customCeilingSlider.Value = targetVal;
                 }
-                _customCeilingLabel.Text = $"Custom Limiter Ceiling: {profile.SafeCeilingPercent:F0}% ({profile.TargetSafeDbSpl:F0} dBA)";
+                _customCeilingLabel.Text = $"Custom Ceiling: {profile.SafeCeilingPercent:F0}% ({profile.TargetSafeDbSpl:F0} dBA)";
             }
             finally
             {
