@@ -252,6 +252,7 @@ Download and run **`PermadB-Setup.exe`**:
 * Configures **Start with Windows** automatically.
 * Registers in **Windows Settings -> Installed Apps / Add or Remove Programs** (complete with dedicated `Uninstall.exe` for 1-click clean removal and endpoint restoration).
 * Launches PermadB immediately into your system tray!
+
 By default, Windows 11 tucks new background notification icons behind the **`^` (chevron)** overflow menu on the taskbar.
 * Click the **`^`** chevron next to your clock.
 * You will see the **PermadB green shield icon**.
