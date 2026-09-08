@@ -8,9 +8,9 @@
 
 > [!IMPORTANT]
 > ### 🩺 Acoustic & Medical Disclaimer
-> PermadB operates exclusively in the **digital PCM domain** ($dBFS$) inside the Windows Audio Engine (`audiodg.exe`). It guarantees that digital sample peaks leaving Windows never exceed the selected digital ceiling.
+> PermadB operates exclusively in the **digital PCM domain** (dBFS) inside the Windows Audio Engine (`audiodg.exe`). It guarantees that digital sample peaks leaving Windows never exceed the selected digital ceiling.
 > 
-> PermadB **cannot** measure, calibrate, or control physical acoustic sound pressure levels ($dBA\text{ SPL}$) hitting your eardrums, which depend on external analog hardware (headphone impedance, transducer sensitivity in $\text{dB SPL / 1 mW}$, external DAC/amp output voltage, and analog volume knobs). All real-world decibel estimates in this documentation assume direct connection of typical consumer headsets with zero analog preamplification. PermadB is an open-source digital audio limiter, not a certified medical or hearing-aid device.
+> PermadB **cannot** measure, calibrate, or control physical acoustic sound pressure levels (dBA SPL) hitting your eardrums, which depend on external analog hardware (headphone impedance, transducer sensitivity in dB SPL / 1 mW, external DAC/amp output voltage, and analog volume knobs). All real-world decibel estimates in this documentation assume direct connection of typical consumer headsets with zero analog preamplification. PermadB is an open-source digital audio limiter, not a certified medical or hearing-aid device.
 
 ---
 
@@ -23,8 +23,8 @@
 - [🩺 Acoustic Safety & WHO Guidelines](#-acoustic-safety--who-guidelines)
 - [🎛️ Safe Listening Presets](#️-safe-listening-presets)
 - [🏗️ System Architecture](#️-system-architecture)
-- [🚀 Quick Start (Installation & Tray Setup)](#-quick-start-installation--tray-setup)
 - [🔐 Deployment Architecture](#-deployment-architecture-development-vs-production-signing)
+- [🚀 Quick Start (Installation & Tray Setup)](#-quick-start-installation--tray-setup)
 - [🛠️ Building from Source](#️-building-from-source)
 - [🗺️ Milestones / Project Status](#️-milestones--project-status)
 - [📄 License](#-license)
@@ -33,7 +33,7 @@
 
 ## 🎧 Overview
 
-Permanent hearing damage and tinnitus are irreversible. Modern audio devices and soundcards can easily output acoustic levels upwards of $105\text{ dBA}$ directly into ears or high-power speakers, yet operating systems offer **zero native protection** against uncompressed audio spikes in games, deafening video ads, or accidental volume slider jumps to 100%.
+Permanent hearing damage and tinnitus are irreversible. Modern audio devices and soundcards can easily output acoustic levels upwards of 105 dBA directly into ears or high-power speakers, yet operating systems offer **zero native protection** against uncompressed audio spikes in games, deafening video ads, or accidental volume slider jumps to 100%.
 
 **PermadB** solves this by running permanently in your Windows system tray, actively monitoring CoreAudio endpoints at 50Hz to ensure that audio streams passing through the Windows Audio Engine are dynamically constrained to safe digital peak ceilings.
 
@@ -41,28 +41,28 @@ Permanent hearing damage and tinnitus are irreversible. Modern audio devices and
 
 ## 🔬 How PermadB Protects Your Hearing
 
-### 1. The Acoustic Challenge: Digital $dBFS$ vs. Real-World $dB\text{ SPL}$
-* **Digital Volume ($dBFS$):** Windows only processes digital PCM samples from $-\infty$ to $0\text{ dBFS}$. It has no awareness of headphone sensitivity or impedance.
-* **Acoustic Pressure ($dB\text{ SPL}$):** Physical sound pressure hitting your eardrums. Sustained exposure to $\ge 85\text{ dBA}$ causes permanent sensorineural hearing loss and tinnitus.
+### 1. The Acoustic Challenge: Digital dBFS vs. Real-World dB SPL
+* **Digital Volume (dBFS):** Windows only processes digital PCM samples from -∞ to 0 dBFS. It has no awareness of headphone sensitivity or impedance.
+* **Acoustic Pressure (dB SPL):** Physical sound pressure hitting your eardrums. Sustained exposure to ≥ 85 dBA causes permanent sensorineural hearing loss and tinnitus.
 * **PermadB's Solution:** Bridges digital audio to acoustic ear safety by enforcing a strict brickwall digital ceiling directly in the Windows audio pipeline, mapped through a **2.5-power perceptual acoustic curve**.
 
 ### 2. Native Lookahead Brickwall Peak Limiter (`PermadBApo.dll`)
 * **Zero Volume Slider Manipulation**: PermadB **never** ducks, moves, or changes Windows Master Volume or per-app mixer sliders. Your Windows volume slider stays permanently untouched at **100%**.
-* **Lookahead Delay Buffer ($\sim 5\text{ ms}$)**: Intercepts upcoming audio spikes inside `audiodg.exe` *before* they are sent to the DAC/speakers.
-* **Monotonic Deque Peak Tracking**: Evaluates multichannel linked peaks in $O(1)$ amortized time with zero heap allocations during real-time audio processing.
-* **Zero-Overshoot Safety Clamp**: Output samples are mathematically constrained to $\le \text{Ceiling}$, ensuring zero audio clipping and zero loud transient shocks.
+* **Lookahead Delay Buffer (~5 ms)**: Intercepts upcoming audio spikes inside `audiodg.exe` *before* they are sent to the DAC/speakers.
+* **Monotonic Deque Peak Tracking**: Evaluates multichannel linked peaks in O(1) amortized time with zero heap allocations during real-time audio processing.
+* **Zero-Overshoot Safety Clamp**: Output samples are mathematically constrained to ≤ Ceiling, ensuring zero audio clipping and zero loud transient shocks.
 
 ### 3. Perceptual Acoustic Decibel Taper
 Human hearing perceives volume logarithmically rather than linearly. PermadB maps slider percentages to digital ceilings using:
 $$\text{Linear Ceiling} = 0.89125 \times \left(\frac{\text{Percent}}{100}\right)^{2.5} \implies \text{dBFS} = 20\log_{10}(\text{Linear Ceiling})$$
-This guarantees that setting a 30% or 50% ceiling applies genuine, powerful attenuation (e.g. $-27.1\text{ dBFS}$ at 30%) to quiet loud web audio (like YouTube) to safe, comfortable levels.
+This guarantees that setting a 30% or 50% ceiling applies genuine, powerful attenuation (e.g. -27.1 dBFS at 30%) to quiet loud web audio (like YouTube) to safe, comfortable levels.
 
 ---
 
 ## ✨ Key Features
 
 * **🛡️ Permanent System Tray Resident:**  
-  Consumes $< 0.1\%$ CPU and ~60 MB RAM. Crisp anti-aliased dynamic shield icon:
+  Consumes < 0.1% CPU and ~60 MB RAM. Crisp anti-aliased dynamic shield icon:
   * 🟢 **Green Shield**: Active & Protecting.
   * 🟡 **Amber Shield**: Custom User Ceiling Active.
   * ⚪ **Gray Shield with Red Slash**: Protection Bypassed.
@@ -77,7 +77,7 @@ This guarantees that setting a 30% or 50% ceiling applies genuine, powerful atte
 * **🎧 Smart Device Auto-Switching:**  
   Automatically detects when you switch between headphones, speakers, or USB headsets and maintains individual safe profiles per device.
 * **🔄 Lock-Free Shared-Memory Auto-Sync:**  
-  PermadB communicates with `audiodg.exe` via high-speed memory-mapped shared memory. If `audiodg.exe` restarts or a new stream opens, PermadB automatically resynchronizes the ceiling in $< 20\text{ ms}$.
+  PermadB communicates with `audiodg.exe` via high-speed memory-mapped shared memory. If `audiodg.exe` restarts or a new stream opens, PermadB automatically resynchronizes the ceiling in < 20 ms.
 * **🖱️ Instant Right-Click Tray Menu:**  
   Toggle protection, switch presets, set custom levels, open dashboard, or configure Windows autostart with a single click.
 * **📊 Modern Web Dashboard (React 19 + Vite):**  
@@ -95,7 +95,7 @@ DJ setups split audio into several physical channels:
 * **Cue Output:** Sent to DJ headphones for track monitoring.
 * **Booth Monitors:** Secondary stage speakers.
 
-Because PermadB installs as an Audio Processing Object (APO) directly into the Windows Audio Engine rendering chain, all audio streams routed through Windows WASAPI are automatically limited at the PCM level. Even if master software output gains or track gains are driven into digital clipping ($0.0\text{ dBFS}$), PermadB's lookahead brickwall limiter clamps the signal to your safe listening ceiling with smooth lookahead gain attenuation designed to minimize audible distortion and pumping compared to harsh digital clipping.
+Because PermadB installs as an Audio Processing Object (APO) directly into the Windows Audio Engine rendering chain, all audio streams routed through Windows WASAPI are automatically limited at the PCM level. Even if master software output gains or track gains are driven into digital clipping (0.0 dBFS), PermadB's lookahead brickwall limiter clamps the signal to your safe listening ceiling with smooth lookahead gain attenuation designed to minimize audible distortion and pumping compared to harsh digital clipping.
 
 ### 2. Audio Driver Architecture & ASIO Bypass Notice
 * **WASAPI Shared Mode (Required for PermadB):** Set your DJ or DAW software's audio engine to **WASAPI (Shared)** or **DirectSound**. In this mode, audio routes through the Windows Audio Engine (`audiodg.exe`), ensuring PermadB's lookahead limiter protects both master PA outputs and cue headphones.
@@ -118,16 +118,16 @@ The World Health Organization (WHO) and NIOSH recommend maximum daily noise dose
 
 ## 🎛️ Safe Listening Presets
 
-PermadB translates user listening presets directly into digital brickwall ceilings using a **2.5-power perceptual acoustic curve** ($\text{Linear} = 0.89125 \times (\text{Percent}/100)^{2.5}$):
+PermadB translates user listening presets directly into digital brickwall ceilings using a **2.5-power perceptual acoustic curve** (`Linear = 0.89125 * (Percent / 100)^2.5`):
 
-| Preset | Slider % | Digital Brickwall Ceiling | Gain Reduction on Full-Scale ($0\text{ dBFS}$) | Est. Headphone Output ($\text{dBA SPL}$)* | Best For | Auditory Safety Profile |
+| Preset | Slider % | Digital Brickwall Ceiling | Gain Reduction on Full-Scale (0 dBFS) | Est. Headphone Output (dBA SPL)* | Best For | Auditory Safety Profile |
 | :--- | :---: | :---: | :---: | :---: | :--- | :--- |
-| 🛡️ **Safe Ears (Default)** | **65%** | **$-10.3\text{ dBFS}$** ($0.3039$) | **$-9.3\text{ dB}$** | **$\sim 72 - 75\text{ dBA}$** | Everyday listening, YouTube, gaming, work | Reference WHO Safe Listening Benchmark for estimated ~75 dBA levels. |
-| 🌙 **Night / Relaxed** | **50%** | **$-16.0\text{ dBFS}$** ($0.1575$) | **$-15.0\text{ dB}$** | **$\sim 65 - 68\text{ dBA}$** | Late night, audiobooks, voice calls | Fatigue-free, quiet listening with reduced ear strain. |
-| 🎧 **Studio Dynamic** | **85%** | **$-4.5\text{ dBFS}$** ($0.5937$) | **$-3.5\text{ dB}$** | **$\sim 80 - 82\text{ dBA}$** | Music production, critical mixing, cinema | Higher dynamic range; clamps loud bursts while preserving transients. |
-| ⚙️ **Custom Ceiling** | **10% – 100%** | **$-51.0$ to $-1.0\text{ dBFS}$** | **$-50.0$ to $0.0\text{ dB}$** | **User defined** | Granular user control | Fully custom ceiling configured via system tray or dashboard slider. |
+| 🛡️ **Safe Ears (Default)** | **65%** | **-10.3 dBFS** (0.3039) | **-9.3 dB** | **~72 - 75 dBA** | Everyday listening, YouTube, gaming, work | Reference WHO Safe Listening Benchmark for estimated ~75 dBA levels. |
+| 🌙 **Night / Relaxed** | **50%** | **-16.0 dBFS** (0.1575) | **-15.0 dB** | **~65 - 68 dBA** | Late night, audiobooks, voice calls | Fatigue-free, quiet listening with reduced ear strain. |
+| 🎧 **Studio Dynamic** | **85%** | **-4.5 dBFS** (0.5937) | **-3.5 dB** | **~80 - 82 dBA** | Music production, critical mixing, cinema | Higher dynamic range; clamps loud bursts while preserving transients. |
+| ⚙️ **Custom Ceiling** | **10% – 100%** | **-51.0 to -1.0 dBFS** | **-50.0 to 0.0 dB** | **User defined** | Granular user control | Fully custom ceiling configured via system tray or dashboard slider. |
 
-*\*Estimated on typical consumer gaming headsets / IEMs (such as HyperX Cloud III Wireless at $\sim 100\text{ dB SPL / 1 mW}$ sensitivity) connected directly via USB/3.5mm with Windows Master Volume at 100% and zero analog preamplification. Actual acoustic sound pressure levels ($dBA\text{ SPL}$) cannot be determined from digital $dBFS$ alone without hardware-specific calibration and analog gain measurement.*
+*\*Estimated on typical consumer gaming headsets / IEMs (such as HyperX Cloud III Wireless at ~100 dB SPL / 1 mW sensitivity) connected directly via USB/3.5mm with Windows Master Volume at 100% and zero analog preamplification. Actual acoustic sound pressure levels (dBA SPL) cannot be determined from digital dBFS alone without hardware-specific calibration and analog gain measurement.*
 
 ---
 
@@ -201,20 +201,20 @@ flowchart TB
    * All hearing protection is performed exclusively on the raw digital PCM audio stream inside `audiodg.exe` by the native `PermadBApo.dll` Endpoint Effect (EFX) APO.
 
 2. **Real-Time Lookahead Brickwall Peak Limiter (`PermadBLimiter.h`)**:
-   * **Lookahead Delay**: Employs a $\sim 5\text{ ms}$ circular buffer (240 frames at 48 kHz). This allows the limiter to inspect upcoming audio spikes *before* they are output, ramping down gain smoothly so sudden transients never clip or shock the ear.
-   * **Monotonic Deque Peak Tracking**: Evaluates multichannel linked peak values in $O(1)$ amortized time with zero allocations during `APOProcess()`.
+   * **Lookahead Delay**: Employs a ~5 ms circular buffer (240 frames at 48 kHz). This allows the limiter to inspect upcoming audio spikes *before* they are output, ramping down gain smoothly so sudden transients never clip or shock the ear.
+   * **Monotonic Deque Peak Tracking**: Evaluates multichannel linked peak values in O(1) amortized time with zero allocations during `APOProcess()`.
    * **Gain Smoothing**: Uses separate attack and exponential release time constants to eliminate audible distortion, pumping, or clicking artifacts.
    * **Zero-Overshoot Safety Clamp**: Final hard safety constraint guarantees not a single sample exceeds the configured linear ceiling.
 
 3. **Perceptual Acoustic Decibel Taper**:
-   * Human hearing perception is logarithmic. A naive linear 30% volume slider ($0.30$ linear $= -10.46\text{ dBFS}$) is only $10.5\text{ dB}$ below maximum volume, which fails to attenuate normal web audio (e.g. YouTube at $-12\text{ dBFS}$).
+   * Human hearing perception is logarithmic. A naive linear 30% volume slider (0.30 linear = -10.46 dBFS) is only 10.5 dB below maximum volume, which fails to attenuate normal web audio (e.g. YouTube at -12 dBFS).
    * PermadB applies a **2.5-power perceptual curve**:
      $$\text{Linear Ceiling} = 0.89125 \times \left(\frac{\text{Percent}}{100}\right)^{2.5} \implies \text{dBFS} = 20\log_{10}(\text{Linear Ceiling})$$
-   * At 30%, the ceiling is $-27.1\text{ dBFS}$, applying an immediate $-15\text{ dB}$ brickwall cut to loud web streams.
+   * At 30%, the ceiling is -27.1 dBFS, applying an immediate -15 dB brickwall cut to loud web streams.
 
 4. **Proactive Auto-Sync & Cold-Boot Resilience**:
    * PermadB proactively initializes the shared memory telemetry buffer with `Magic = "PERM"` and the active preset ceiling before `audiodg.exe` starts rendering.
-   * A continuous 50 Hz watchdog inspects `audiodg.exe`'s configured ceiling. If `audiodg.exe` cold-boots, restarts, or drifts, PermadB automatically resynchronizes the ceiling within $20\text{ ms}$.
+   * A continuous 50 Hz watchdog inspects `audiodg.exe`'s configured ceiling. If `audiodg.exe` cold-boots, restarts, or drifts, PermadB automatically resynchronizes the ceiling within 20 ms.
 
 5. **Clean Reinstall Guarantee**:
    * Installer and uninstaller automatically clear stale `%APPDATA%\PermadB\config.json` caches so every new installation defaults cleanly to **Safe Ears (65%)**.
@@ -227,7 +227,7 @@ flowchart TB
 In Windows 11 and 10, the Windows Audio Engine (`audiodg.exe`) incorporates Protected Process Light (PPL) isolation as part of Protected User Mode Audio (PUMA) to guard DRM and audio pipelines. On systems with PPL or driver signature requirements enforced, `audiodg.exe` may reject third-party Audio Processing Object (APO) DLLs that do not bear a valid Microsoft Hardware Compatibility signature (`STATUS_IMAGE_CERT_REVOKED` / `0xC0000428`).
 
 ### Development / Test Mode (Current Open-Source Release)
-To allow developers and users of this open-source project to run the high-performance C++ Limiter APO without requiring an expensive commercial EV Code Signing certificate ($500+/year) and Microsoft Hardware Dev Center account:
+To allow developers and users of this open-source project to run the high-performance C++ Limiter APO without requiring an expensive commercial EV Code Signing certificate (USD 500+/year) and Microsoft Hardware Dev Center account:
 * The installer configures `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Audio\DisableProtectedAudioDG = 1`.
 * This instructs Windows to permit custom-compiled APO binaries inside `audiodg.exe`.
 * Full PCM sample limiting, ~5 ms lookahead brickwall safety, and endpoint chain preservation function immediately out-of-the-box.
@@ -238,14 +238,6 @@ For enterprise distribution, OEM bundling, or production deployment without requ
 2. **Microsoft Hardware Dev Center & HLK Certification**: Under Microsoft's official [Implementing Audio Processing Objects](https://learn.microsoft.com/en-us/windows-hardware/drivers/audio/implementing-audio-processing-objects) documentation, obtaining the protected environment signature attribute (`SignatureAttributes.PETrust`) required for `audiodg.exe` PPL loading cannot be achieved through basic automated attestation alone; it requires submitting test logs passing the official **Windows Hardware Lab Kit (HLK)** audio test playlist.
 3. **Microsoft Production Signature**: Upon passing HLK certification, Microsoft issues an official catalog signature granting protected media trust.
 4. **Protected Loading**: With official WHDC HLK signing, `audiodg.exe` loads the APO natively under full PPL protection (`DisableProtectedAudioDG = 0`).
-
----
-
-## 💡 Windows 11 System Tray Visibility Note
-By default, Windows 11 tucks new background notification icons behind the **`^` (chevron)** overflow menu on the taskbar.
-* Click the **`^`** chevron next to your clock.
-* You will see the **PermadB green shield icon**.
-* If you want it always visible directly on your main taskbar, simply **drag the shield icon** down onto your taskbar, or go to **Windows Settings -> Personalization -> Taskbar -> Other system tray icons** and switch **PermadB** to **On**.
 
 ---
 
@@ -260,6 +252,12 @@ Download and run **`PermadB-Setup.exe`**:
 * Configures **Start with Windows** automatically.
 * Registers in **Windows Settings -> Installed Apps / Add or Remove Programs** (complete with dedicated `Uninstall.exe` for 1-click clean removal and endpoint restoration).
 * Launches PermadB immediately into your system tray!
+
+### 💡 Windows 11 System Tray Visibility Note
+By default, Windows 11 tucks new background notification icons behind the **`^` (chevron)** overflow menu on the taskbar.
+* Click the **`^`** chevron next to your clock.
+* You will see the **PermadB green shield icon**.
+* If you want it always visible directly on your main taskbar, simply **drag the shield icon** down onto your taskbar, or go to **Windows Settings -> Personalization -> Taskbar -> Other system tray icons** and switch **PermadB** to **On**.
 
 ---
 
@@ -351,7 +349,7 @@ Realistically, reaching full production deployment is divided into two clear pha
 * [x] **Uninstaller removes package** (Automated `pnputil.exe /delete-driver <oem#.inf> /uninstall /force` DriverStore purging in [`Uninstall.exe`](file:///A:/Projects2/PermadB/installer/uninstaller/Program.cs))
 * [x] **Test HyperX** (Verified live inside `audiodg.exe` on HyperX Cloud III Wireless `{016f299a-9d06-4ee3-af64-694963b2b204}`; 0 overshoots across 1.9M+ samples at 48 kHz stereo)
 * [x] **Verify Windows volume never changes** (Windows Master Volume verified static at 100% / scalar 1.0; code audited with zero volume slider mutators)
-* [x] **Verify limiter still works** (Deterministic unit tests passed: 5/5 in `test_dsp.exe`; live telemetry verified: inputs peaking at $-1.59\text{ dBFS}$ clamped strictly to $-10.35\text{ dBFS}$ with $-8.77\text{ dB}$ gain reduction)
+* [x] **Verify limiter still works** (Deterministic unit tests passed: 5/5 in `test_dsp.exe`; live telemetry verified: inputs peaking at -1.59 dBFS clamped strictly to -10.35 dBFS with -8.77 dB gain reduction)
 * [ ] Formal WDK `InfVerif.exe /u` validation (Requires Windows Driver Kit)
 * [ ] Test another USB device (Community testing welcome!)
 * [ ] Test Bluetooth (Community testing welcome!)
