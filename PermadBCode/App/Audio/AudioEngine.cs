@@ -68,7 +68,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
     private DateTime _lastDuckTime = DateTime.MinValue;
     private long _spikesClampedCount = 0;
     private bool _isCurrentlyClamping = false;
-    private float _preDuckMasterVolume = -1.0f;
+    private float _userBaselineVolume = -1.0f;
 
     // Process name and baseline volume tracking for per-app Windows Sound Mixer sessions
     private readonly ConcurrentDictionary<int, string> _processNameCache = new();
@@ -340,7 +340,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                 // Poll audio meter
                 InternalPollMeter();
 
-                Thread.Sleep(20); // 50 Hz
+                Thread.Sleep(10); // 100 Hz (10ms DAW-grade limiter cycle)
             }
         }
         catch (Exception ex)
@@ -430,6 +430,10 @@ public class AudioEngine : IMMNotificationClient, IDisposable
         if (needsRestore)
         {
             InternalEnforceCeiling();
+        }
+        else if (!_isCurrentlyClamping)
+        {
+            _userBaselineVolume = data.MasterVolume;
         }
     }
 
@@ -587,44 +591,47 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                 channelPeaks[i] = meter.PeakValues[i];
             }
 
-            // Dynamic Transient Limiter (Ear Shield): Real-time micro-ducking on uncompressed spikes
+            // Master Bus DAW-Grade Hardlock Limiter: 10ms transient brickwall protection for ALL audio (games, Discord, streams)
             if (_config.Settings.Enabled && _config.Settings.DynamicLimiterEnabled)
             {
-                var threshold = Math.Max(_config.Settings.DynamicThresholdDbfs, -1.5f);
-                // Allow transient peaks up to +14 dB above continuous RMS target (standard acoustic crest factor)
-                var safePeakSpl = profile.TargetSafeDbSpl + 14.0f;
+                // Hard ceiling is locked directly to the active preset (e.g. 75 dBA target -> 78 dBA absolute peak hardlock)
+                // Any acoustic burst above this ceiling (screaming teammate, CS2 AWP shot, loud video) is hard-clamped instantly!
+                var limiterCeilingSpl = profile.TargetSafeDbSpl + 3.0f;
 
-                // An audio burst is dangerous if peak dBFS hits threshold AND estimated peak SPL exceeds safe peak ceiling
-                bool isUnsafeSpike = peakDbfs > threshold && estimatedPeakSpl > safePeakSpl;
+                // Check if current physical acoustic output exceeds the hardlock ceiling
+                bool isExceedingCeiling = estimatedPeakSpl > limiterCeilingSpl;
 
-                if (isUnsafeSpike)
+                if (isExceedingCeiling)
                 {
                     _isCurrentlyClamping = true;
                     _lastDuckTime = DateTime.UtcNow;
                     _spikesClampedCount++;
 
-                    // Calculate overshoot in dB
-                    var overshoot = Math.Max(peakDbfs - threshold, estimatedPeakSpl - safePeakSpl);
-                    if (overshoot > 0.5f && !_isAdjustingVolume)
+                    // Calculate exact decibel overshoot above the safe hardlock ceiling
+                    var overshootDb = estimatedPeakSpl - limiterCeilingSpl;
+                    
+                    if (!_isAdjustingVolume)
                     {
-                        if (_preDuckMasterVolume < 0)
+                        if (_userBaselineVolume < 0)
                         {
-                            _preDuckMasterVolume = endpointVol.MasterVolumeLevelScalar;
+                            _userBaselineVolume = endpointVol.MasterVolumeLevelScalar;
                         }
 
-                        // Duck volume scalar based on overshoot from original pre-duck baseline (max 10 dB cut)
-                        var duckDb = Math.Clamp(overshoot, 1.5f, 10.0f);
-                        var duckFactor = (float)Math.Pow(10, -duckDb / 20.0);
-                        var targetDuckScalar = Math.Clamp(_preDuckMasterVolume * duckFactor, 0.25f, profile.SafeCeilingPercent / 100.0f);
+                        // Determine the user's maximum allowable baseline volume
+                        var maxBaseline = Math.Min(_userBaselineVolume, profile.SafeCeilingPercent / 100.0f);
 
-                        if (targetDuckScalar < endpointVol.MasterVolumeLevelScalar)
+                        // Exact brickwall limiter attenuation: cut by exactly the overshoot amount
+                        var clampFactor = (float)Math.Pow(10, -Math.Min(overshootDb, 24.0f) / 20.0);
+                        var targetDuckScalar = Math.Clamp(maxBaseline * clampFactor, 0.10f, maxBaseline);
+
+                        if (targetDuckScalar < endpointVol.MasterVolumeLevelScalar - 0.005f)
                         {
                             _isAdjustingVolume = true;
                             try
                             {
                                 endpointVol.MasterVolumeLevelScalar = targetDuckScalar;
                                 volScalar = targetDuckScalar;
-                                Console.WriteLine($"[AudioEngine] 🛡️ Dynamic Ear Shield micro-ducked volume by {duckDb:F1} dB (Target: {targetDuckScalar * 100:F0}%)");
+                                Console.WriteLine($"[AudioEngine] 🛡️ DAW Hardlock Limiter clamped peak ({estimatedPeakSpl:F1} dBA -> {limiterCeilingSpl:F1} dBA) -{overshootDb:F1} dB");
                             }
                             finally
                             {
@@ -634,28 +641,43 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                     }
                     OnPeakClamped?.Invoke(peakDbfs);
                 }
-                else if (_isCurrentlyClamping && (DateTime.UtcNow - _lastDuckTime).TotalMilliseconds > 250)
+                // Fast, Transparent DAW Release Envelope (40ms hold, smooth exponential recovery in ~80ms)
+                else if (_isCurrentlyClamping && (DateTime.UtcNow - _lastDuckTime).TotalMilliseconds > 40)
                 {
-                    _isCurrentlyClamping = false;
-                    // Smooth recovery to pre-duck volume level
-                    if (_preDuckMasterVolume > 0 && !_isAdjustingVolume)
+                    var targetRecover = Math.Min(_userBaselineVolume > 0 ? _userBaselineVolume : profile.SafeCeilingPercent / 100.0f, profile.SafeCeilingPercent / 100.0f);
+                    
+                    if (!_isAdjustingVolume && endpointVol.MasterVolumeLevelScalar < targetRecover - 0.005f)
                     {
-                        var targetRecover = Math.Min(_preDuckMasterVolume, profile.SafeCeilingPercent / 100.0f);
-                        if (endpointVol.MasterVolumeLevelScalar < targetRecover)
+                        _isAdjustingVolume = true;
+                        try
                         {
-                            _isAdjustingVolume = true;
-                            try
+                            // Smooth exponential release step (smoothly ramps back to baseline without audio clicks or pumping)
+                            var step = (targetRecover - endpointVol.MasterVolumeLevelScalar) * 0.35f;
+                            var newScalar = Math.Min(targetRecover, endpointVol.MasterVolumeLevelScalar + Math.Max(step, 0.02f));
+                            endpointVol.MasterVolumeLevelScalar = newScalar;
+                            volScalar = newScalar;
+
+                            if (Math.Abs(newScalar - targetRecover) < 0.01f)
                             {
                                 endpointVol.MasterVolumeLevelScalar = targetRecover;
                                 volScalar = targetRecover;
-                            }
-                            finally
-                            {
-                                _isAdjustingVolume = false;
+                                _isCurrentlyClamping = false;
                             }
                         }
-                        _preDuckMasterVolume = -1.0f;
+                        finally
+                        {
+                            _isAdjustingVolume = false;
+                        }
                     }
+                    else if (!_isAdjustingVolume)
+                    {
+                        _isCurrentlyClamping = false;
+                    }
+                }
+                else if (!_isCurrentlyClamping && !_isAdjustingVolume)
+                {
+                    // Update user baseline when audio is normal and quiet
+                    _userBaselineVolume = endpointVol.MasterVolumeLevelScalar;
                 }
             }
 
