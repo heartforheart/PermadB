@@ -105,39 +105,39 @@ public class TrayIconManager : IDisposable
         _contextMenu.Items.Add(new ToolStripSeparator());
 
         // Presets submenu
-        _safePresetItem = new ToolStripMenuItem("Safe Ears (65% / ~75 dB)", null, (s, e) =>
+        _safePresetItem = new ToolStripMenuItem("Safe Ears (65% Limiter / 75 dBA)", null, (s, e) =>
         {
             _engine.ApplyPreset("safe");
             UpdateTrayAppearance();
-            ShowNotification("Safe Ears Activated", "Ceiling and volume set to safe level (65% / ~75 dB SPL).");
+            ShowNotification("Safe Ears Activated", "Limiter ceiling set to safe level (65% / 75 dBA). Windows volume: 100%.");
         });
         _contextMenu.Items.Add(_safePresetItem);
 
-        _nightPresetItem = new ToolStripMenuItem("Night / Relaxed (40% / ~60 dB)", null, (s, e) =>
+        _nightPresetItem = new ToolStripMenuItem("Night Mode (50% Limiter / 68 dBA)", null, (s, e) =>
         {
             _engine.ApplyPreset("night");
             UpdateTrayAppearance();
-            ShowNotification("Night Mode Activated", "Ceiling and volume set to fatigue-free level (40% / ~60 dB SPL).");
+            ShowNotification("Night Mode Activated", "Limiter ceiling set to fatigue-free level (50% / 68 dBA). Windows volume: 100%.");
         });
         _contextMenu.Items.Add(_nightPresetItem);
 
-        _studioPresetItem = new ToolStripMenuItem("Studio / Loud (80% / ~85 dB)", null, (s, e) =>
+        _studioPresetItem = new ToolStripMenuItem("Studio Mode (85% Limiter / 82 dBA)", null, (s, e) =>
         {
             _engine.ApplyPreset("studio");
             UpdateTrayAppearance();
-            ShowNotification("Studio Mode Activated", "Ceiling and volume set to dynamic range (80% / ~85 dB SPL).");
+            ShowNotification("Studio Mode Activated", "Limiter ceiling set to high dynamic range (85% / 82 dBA). Windows volume: 100%.");
         });
         _contextMenu.Items.Add(_studioPresetItem);
 
         // Custom Quick Level
-        _customPresetItem = new ToolStripMenuItem("Set Custom Ceiling...");
+        _customPresetItem = new ToolStripMenuItem("Set Custom Limiter Ceiling...");
         AddCustomLevelSubmenu(_customPresetItem);
         _contextMenu.Items.Add(_customPresetItem);
 
         _contextMenu.Items.Add(new ToolStripSeparator());
 
         // Open Dashboard
-        var dashboardItem = new ToolStripMenuItem("📊 Open Dashboard & Calibrate...", null, (s, e) =>
+        var dashboardItem = new ToolStripMenuItem("📊 Open PermadB Dashboard...", null, (s, e) =>
         {
             OnOpenDashboardRequested?.Invoke();
         })
@@ -228,12 +228,12 @@ public class TrayIconManager : IDisposable
         int[] steps = { 30, 40, 50, 60, 70, 75, 80, 85, 90 };
         foreach (var percent in steps)
         {
-            var subItem = new ToolStripMenuItem($"{percent}% Max Volume", null, (s, e) =>
+            var subItem = new ToolStripMenuItem($"{percent}% Limiter Ceiling", null, (s, e) =>
             {
                 _config.Settings.ActivePreset = "custom";
                 _engine.SetSafeCeiling(percent);
                 UpdateTrayAppearance();
-                ShowNotification("Custom Ceiling Set", $"Safe volume ceiling capped at {percent}%.");
+                ShowNotification("Custom Limiter Set", $"Limiter ceiling set to {percent}%. Windows volume: 100%.");
             });
             parent.DropDownItems.Add(subItem);
         }
@@ -261,7 +261,7 @@ public class TrayIconManager : IDisposable
 
             var devIcon = profile.DeviceType == "headphones" ? "🎧" : "🔊";
             var shortName = profile.DeviceName.Length > 28 ? profile.DeviceName[..25] + "..." : profile.DeviceName;
-            _deviceInfoItem.Text = $"{devIcon} {shortName} [Cap: {profile.SafeCeilingPercent:F0}%]";
+            _deviceInfoItem.Text = $"{devIcon} {shortName} [Limiter: {profile.SafeCeilingPercent:F0}%]";
 
             _safePresetItem.Checked = isEnabled && preset == "safe";
             _nightPresetItem.Checked = isEnabled && preset == "night";
@@ -274,7 +274,7 @@ public class TrayIconManager : IDisposable
             _startupItem.Checked = StartupManager.IsStartupEnabled();
 
             // Tooltip text (max 63 chars for Windows NotifyIcon compatibility)
-            var statusStr = isEnabled ? $"Active ({profile.SafeCeilingPercent:F0}% Cap)" : "Disabled";
+            var statusStr = isEnabled ? $"Active ({profile.SafeCeilingPercent:F0}% Limiter)" : "Disabled";
             var tooltip = $"PermadB: {statusStr}\n{shortName}";
             if (tooltip.Length > 63) tooltip = tooltip[..60] + "...";
             _notifyIcon.Text = tooltip;

@@ -151,8 +151,26 @@ public class AudioEngine : IMMNotificationClient, IDisposable
         PostToAudioThread(() =>
         {
             var profile = GetActiveProfile();
-            profile.SafeCeilingPercent = Math.Clamp(percent, 5.0f, 100.0f);
+            profile.SafeCeilingPercent = Math.Clamp(percent, 10.0f, 100.0f);
+            profile.TargetSafeDbSpl = 50.0f + (profile.SafeCeilingPercent / 100.0f) * 38.0f;
+            _config.Settings.ActivePreset = "custom";
             _config.Save();
+
+            // Ensure Windows master volume is maintained at 100%
+            if (_activeDevice != null && !_isCurrentlyClamping)
+            {
+                _isAdjustingVolume = true;
+                try
+                {
+                    _activeDevice.AudioEndpointVolume.MasterVolumeLevelScalar = 1.0f;
+                    _userBaselineVolume = 1.0f;
+                }
+                finally
+                {
+                    _isAdjustingVolume = false;
+                }
+            }
+
             InternalEnforceCeiling();
             UpdateCachedProfile(profile);
         });
@@ -163,62 +181,50 @@ public class AudioEngine : IMMNotificationClient, IDisposable
         PostToAudioThread(() =>
         {
             var profile = GetActiveProfile();
-            float targetVolume;
 
             switch (preset.ToLowerInvariant())
             {
                 case "night":
-                    profile.SafeCeilingPercent = profile.DeviceType == "headphones" ? 40.0f : 45.0f;
-                    profile.TargetSafeDbSpl = 60.0f;
+                    profile.SafeCeilingPercent = 50.0f;
+                    profile.TargetSafeDbSpl = 68.0f;
                     _config.Settings.DynamicThresholdDbfs = -6.0f;
                     _config.Settings.ActivePreset = "night";
-                    targetVolume = profile.SafeCeilingPercent;
                     break;
                 case "studio":
-                    profile.SafeCeilingPercent = profile.DeviceType == "headphones" ? 80.0f : 85.0f;
-                    profile.TargetSafeDbSpl = 85.0f;
+                    profile.SafeCeilingPercent = 85.0f;
+                    profile.TargetSafeDbSpl = 82.0f;
                     _config.Settings.DynamicThresholdDbfs = -1.5f;
                     _config.Settings.ActivePreset = "studio";
-                    targetVolume = profile.SafeCeilingPercent;
                     break;
                 case "safe":
                 default:
-                    profile.SafeCeilingPercent = profile.DeviceType == "headphones" ? 65.0f : 75.0f;
+                    profile.SafeCeilingPercent = 65.0f;
                     profile.TargetSafeDbSpl = 75.0f;
                     _config.Settings.DynamicThresholdDbfs = -3.0f;
                     _config.Settings.ActivePreset = "safe";
-                    targetVolume = profile.SafeCeilingPercent;
                     break;
             }
 
             _config.Settings.DynamicLimiterEnabled = true;
             _config.Save();
 
-            // Only clamp the master output volume if it currently exceeds the preset's safe ceiling.
-            // If the user was already listening at a quieter level, preserve it (lower = safer)!
+            // Always maintain Windows master volume at 100%; the preset controls the Limiter ceiling!
             if (_activeDevice != null)
             {
-                var currentVol = _activeDevice.AudioEndpointVolume.MasterVolumeLevelScalar * 100.0f;
-                if (currentVol > targetVolume)
+                _isAdjustingVolume = true;
+                try
                 {
-                    _isAdjustingVolume = true;
-                    try
-                    {
-                        _activeDevice.AudioEndpointVolume.MasterVolumeLevelScalar = Math.Clamp(targetVolume / 100.0f, 0.0f, 1.0f);
-                        Console.WriteLine($"[AudioEngine] Preset '{preset}' applied: Clamped output volume from {currentVol:F1}% down to ceiling {targetVolume:F1}%");
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"[AudioEngine] Error applying preset volume: {ex.Message}");
-                    }
-                    finally
-                    {
-                        _isAdjustingVolume = false;
-                    }
+                    _activeDevice.AudioEndpointVolume.MasterVolumeLevelScalar = 1.0f;
+                    _userBaselineVolume = 1.0f;
+                    Console.WriteLine($"[AudioEngine] Preset '{preset}' applied (Limiter Ceiling: {profile.SafeCeilingPercent:F0}% / {profile.TargetSafeDbSpl:F0} dBA). Windows master volume set to 100%.");
                 }
-                else
+                catch (Exception ex)
                 {
-                    Console.WriteLine($"[AudioEngine] Preset '{preset}' applied: Ceiling set to {targetVolume:F1}%. Current volume ({currentVol:F1}%) preserved.");
+                    Console.WriteLine($"[AudioEngine] Error applying preset volume: {ex.Message}");
+                }
+                finally
+                {
+                    _isAdjustingVolume = false;
                 }
             }
 
@@ -232,18 +238,12 @@ public class AudioEngine : IMMNotificationClient, IDisposable
         PostToAudioThread(() =>
         {
             if (_activeDevice == null) return;
-            var profile = GetActiveProfile();
-
-            var target = percent;
-            if (_config.Settings.Enabled && target > profile.SafeCeilingPercent)
-            {
-                target = profile.SafeCeilingPercent;
-            }
-
             _isAdjustingVolume = true;
             try
             {
-                _activeDevice.AudioEndpointVolume.MasterVolumeLevelScalar = Math.Clamp(target / 100.0f, 0.0f, 1.0f);
+                var target = Math.Clamp(percent / 100.0f, 0.0f, 1.0f);
+                _activeDevice.AudioEndpointVolume.MasterVolumeLevelScalar = target;
+                _userBaselineVolume = target;
             }
             catch (Exception ex)
             {
@@ -418,20 +418,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
     {
         if (_isAdjustingVolume || !_config.Settings.Enabled) return;
 
-        var profile = GetActiveProfile();
-        var currentPercent = data.MasterVolume * 100.0f;
-
-        // Allow any volume at or below the safe ceiling (lower is quieter and safer).
-        // Intercept and clamp only if volume tries to exceed the safe ceiling!
-        bool needsRestore = _config.Settings.StrictVolumeLock
-            ? currentPercent > profile.SafeCeilingPercent + 0.1f
-            : currentPercent > profile.SafeCeilingPercent + 0.5f;
-
-        if (needsRestore)
-        {
-            InternalEnforceCeiling();
-        }
-        else if (!_isCurrentlyClamping)
+        if (!_isCurrentlyClamping)
         {
             _userBaselineVolume = data.MasterVolume;
         }
@@ -445,14 +432,14 @@ public class AudioEngine : IMMNotificationClient, IDisposable
 
         int count = 0;
 
-        // 1. Enforce on Default Active Device
+        // 1. Enforce on Default Active Device (Ensure baseline is 100%)
         if (_activeDevice != null)
         {
             EnforceDeviceCeiling(_activeDevice, isDefault: true);
             count++;
         }
 
-        // 2. Multi-Device Enforcer: If ApplyToAllDevices is enabled, enforce on ALL active playback endpoints!
+        // 2. Multi-Device Enforcer: If ApplyToAllDevices is enabled, maintain baseline on ALL active playback endpoints!
         if (_config.Settings.ApplyToAllDevices && _enumerator != null)
         {
             try
@@ -503,27 +490,18 @@ public class AudioEngine : IMMNotificationClient, IDisposable
     {
         try
         {
-            var profile = isDefault ? GetActiveProfile() : _config.GetOrCreateProfile(device.ID, device.FriendlyName);
-            var safeCapPercent = _config.Settings.ApplyToAllDevices 
-                ? GetActiveProfile().SafeCeilingPercent 
-                : profile.SafeCeilingPercent;
+            if (_isCurrentlyClamping) return; // Limiter is actively handling transient ducking
 
-            var safeCap = Math.Clamp(safeCapPercent, 5.0f, 100.0f);
-            var currentVol = device.AudioEndpointVolume.MasterVolumeLevelScalar * 100.0f;
-
-            // Only correct if volume exceeds the safe ceiling.
-            // Lower volumes are quieter and safer, so they are always allowed freely!
-            bool needsCorrection = _config.Settings.StrictVolumeLock
-                ? currentVol > safeCap + 0.1f
-                : currentVol > safeCap + 0.5f;
-
-            if (needsCorrection)
+            // Windows audio sits at 100% by default with Limiter dynamically guarding spikes
+            var currentVol = device.AudioEndpointVolume.MasterVolumeLevelScalar;
+            if (currentVol < 0.99f && !_isCurrentlyClamping)
             {
                 if (isDefault) _isAdjustingVolume = true;
                 try
                 {
-                    device.AudioEndpointVolume.MasterVolumeLevelScalar = safeCap / 100.0f;
-                    Console.WriteLine($"[AudioEngine] Volume ceiling enforced on '{device.FriendlyName}': clamped from {currentVol:F1}% down to safe ceiling {safeCap:F1}%");
+                    device.AudioEndpointVolume.MasterVolumeLevelScalar = 1.0f;
+                    if (isDefault) _userBaselineVolume = 1.0f;
+                    Console.WriteLine($"[AudioEngine] Master volume on '{device.FriendlyName}' maintained at 100%.");
                 }
                 finally
                 {
@@ -548,21 +526,6 @@ public class AudioEngine : IMMNotificationClient, IDisposable
             var peak = meter.MasterPeakValue;
             var volScalar = endpointVol.MasterVolumeLevelScalar;
             var profile = GetActiveProfile();
-
-            // Proactive continuous ceiling enforcement (Double safety net at 50Hz)
-            if (_config.Settings.Enabled)
-            {
-                var currentVolPercent = volScalar * 100.0f;
-                bool needsCheck = _config.Settings.StrictVolumeLock
-                    ? currentVolPercent > profile.SafeCeilingPercent + 0.05f
-                    : currentVolPercent > profile.SafeCeilingPercent + 0.2f;
-
-                if (needsCheck)
-                {
-                    InternalEnforceCeiling();
-                    volScalar = endpointVol.MasterVolumeLevelScalar;
-                }
-            }
 
             // Hardware master volume attenuation in dB
             float masterDbAtten;
@@ -594,9 +557,9 @@ public class AudioEngine : IMMNotificationClient, IDisposable
             // Master Bus DAW-Grade Hardlock Limiter: 10ms transient brickwall protection for ALL audio (games, Discord, streams)
             if (_config.Settings.Enabled && _config.Settings.DynamicLimiterEnabled)
             {
-                // Hard ceiling is locked directly to the active preset (e.g. 75 dBA target -> 78 dBA absolute peak hardlock)
-                // Any acoustic burst above this ceiling (screaming teammate, CS2 AWP shot, loud video) is hard-clamped instantly!
-                var limiterCeilingSpl = profile.TargetSafeDbSpl + 3.0f;
+                // Hard ceiling is locked directly to the active preset (e.g. 75 dBA for Safe Ears, 68 dBA for Night, 82 dBA for Studio)
+                // Any acoustic burst above this ceiling is hard-clamped instantly!
+                var limiterCeilingSpl = profile.TargetSafeDbSpl;
 
                 // Check if current physical acoustic output exceeds the hardlock ceiling
                 bool isExceedingCeiling = estimatedPeakSpl > limiterCeilingSpl;
@@ -612,17 +575,11 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                     
                     if (!_isAdjustingVolume)
                     {
-                        if (_userBaselineVolume < 0)
-                        {
-                            _userBaselineVolume = endpointVol.MasterVolumeLevelScalar;
-                        }
-
-                        // Determine the user's maximum allowable baseline volume
-                        var maxBaseline = Math.Min(_userBaselineVolume, profile.SafeCeilingPercent / 100.0f);
+                        var maxBaseline = 1.0f; // Windows audio baseline sits at 100%
 
                         // Exact brickwall limiter attenuation: cut by exactly the overshoot amount
-                        var clampFactor = (float)Math.Pow(10, -Math.Min(overshootDb, 24.0f) / 20.0);
-                        var targetDuckScalar = Math.Clamp(maxBaseline * clampFactor, 0.10f, maxBaseline);
+                        var clampFactor = (float)Math.Pow(10, -Math.Min(overshootDb, 30.0f) / 20.0);
+                        var targetDuckScalar = Math.Clamp(maxBaseline * clampFactor, 0.05f, maxBaseline);
 
                         if (targetDuckScalar < endpointVol.MasterVolumeLevelScalar - 0.005f)
                         {
@@ -644,14 +601,14 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                 // Fast, Transparent DAW Release Envelope (40ms hold, smooth exponential recovery in ~80ms)
                 else if (_isCurrentlyClamping && (DateTime.UtcNow - _lastDuckTime).TotalMilliseconds > 40)
                 {
-                    var targetRecover = Math.Min(_userBaselineVolume > 0 ? _userBaselineVolume : profile.SafeCeilingPercent / 100.0f, profile.SafeCeilingPercent / 100.0f);
+                    var targetRecover = 1.0f; // Recover smoothly back to 100%
                     
                     if (!_isAdjustingVolume && endpointVol.MasterVolumeLevelScalar < targetRecover - 0.005f)
                     {
                         _isAdjustingVolume = true;
                         try
                         {
-                            // Smooth exponential release step (smoothly ramps back to baseline without audio clicks or pumping)
+                            // Smooth exponential release step (smoothly ramps back to 100% without audio clicks or pumping)
                             var step = (targetRecover - endpointVol.MasterVolumeLevelScalar) * 0.35f;
                             var newScalar = Math.Min(targetRecover, endpointVol.MasterVolumeLevelScalar + Math.Max(step, 0.02f));
                             endpointVol.MasterVolumeLevelScalar = newScalar;
@@ -676,8 +633,8 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                 }
                 else if (!_isCurrentlyClamping && !_isAdjustingVolume)
                 {
-                    // Update user baseline when audio is normal and quiet
-                    _userBaselineVolume = endpointVol.MasterVolumeLevelScalar;
+                    // Windows audio baseline remains at 100%
+                    _userBaselineVolume = 1.0f;
                 }
             }
 
