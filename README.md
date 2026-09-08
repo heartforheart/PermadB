@@ -221,20 +221,6 @@ flowchart TB
 
 ---
 
-## 🚀 Quick Start (Installation & Tray Setup)
-
-### 1-Click Setup Installer (`PermadB-Setup.exe`)
-Download and run **`PermadB-Setup.exe`**:
-* Installs cleanly to `%ProgramFiles%\PermadB` (or `%LOCALAPPDATA%\Programs\PermadB`) with UAC Administrator elevation.
-* Automatically registers and binds the **PermadB Limiter APO** (`PermadBApo.dll`) into the Windows Audio Engine endpoint processing chain.
-* Preserves OEM and hardware audio enhancement chains (EFX/MFX/SFX) with complete rollback backups.
-* Creates **Desktop** and **Start Menu** shortcuts.
-* Configures **Start with Windows** automatically.
-* Registers in **Windows Settings -> Installed Apps / Add or Remove Programs** (complete with dedicated `Uninstall.exe` for 1-click clean removal and endpoint restoration).
-* Launches PermadB immediately into your system tray!
-
----
-
 ## 🔐 Deployment Architecture: Development vs. Production Signing
 
 ### audiodg.exe & The Windows Audio Security Model
@@ -260,6 +246,20 @@ By default, Windows 11 tucks new background notification icons behind the **`^` 
 * Click the **`^`** chevron next to your clock.
 * You will see the **PermadB green shield icon**.
 * If you want it always visible directly on your main taskbar, simply **drag the shield icon** down onto your taskbar, or go to **Windows Settings -> Personalization -> Taskbar -> Other system tray icons** and switch **PermadB** to **On**.
+
+---
+
+## 🚀 Quick Start (Installation & Tray Setup)
+
+### 1-Click Setup Installer (`PermadB-Setup.exe`)
+Download and run **`PermadB-Setup.exe`**:
+* Installs cleanly to `%ProgramFiles%\PermadB` (or `%LOCALAPPDATA%\Programs\PermadB`) with UAC Administrator elevation.
+* Automatically registers and binds the **PermadB Limiter APO** (`PermadBApo.dll`) into the Windows Audio Engine endpoint processing chain.
+* Preserves OEM and hardware audio enhancement chains (EFX/MFX/SFX) with complete rollback backups.
+* Creates **Desktop** and **Start Menu** shortcuts.
+* Configures **Start with Windows** automatically.
+* Registers in **Windows Settings -> Installed Apps / Add or Remove Programs** (complete with dedicated `Uninstall.exe` for 1-click clean removal and endpoint restoration).
+* Launches PermadB immediately into your system tray!
 
 ---
 
