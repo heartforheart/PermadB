@@ -335,21 +335,21 @@ Production signing and proper Windows driver/APO package deployment are not yet 
 
 Realistically, reaching full production deployment is divided into two clear phases:
 
-#### 🛠️ Phase A — Free Engineering (Community Contributions Welcome!)
-* [ ] Proper APO INF (`Class=AudioProcessingObject`)
-* [ ] CAT generation via `Inf2Cat`
-* [ ] Proper package structure
-* [ ] Installer installs package (`pnputil /add-driver`)
-* [ ] Uninstaller removes package (`pnputil /delete-driver`)
-* [ ] No `DisableProtectedAudioDG` requirement
-* [ ] Secure Boot ON compatibility
+#### 🛠️ Phase A — Free Engineering (Completed & In Progress)
+* [x] **Proper APO INF** (`Class=AudioProcessingObject`, `ClassGuid={5989fce8-9cd0-467d-8a6a-5419e31529d4}`)
+* [x] **CAT generation** (Automated via `makecat.exe` and `PermadBApo.cdf`)
+* [x] **Proper package structure** (`driver_package/` directory with INF, CAT, DLL, and WHDC documentation)
+* [x] **Installer installs package** (`pnputil /add-driver` integration & OEM inf tracking in `InstallerEngine.cs`)
+* [x] **Uninstaller removes package** (`pnputil /delete-driver <oem#.inf> /uninstall /force` in `Uninstall.exe`)
+* [x] **Test HyperX** (Verified on HyperX Cloud III Wireless endpoint)
+* [x] **Verify Windows volume never changes** (Windows volume stays 100% static; zero slider manipulation)
+* [x] **Verify limiter still works** (Real-time lookahead brickwall DSP clamping PCM audio at safe ceilings)
+* [ ] Test another USB device (Community testing welcome!)
+* [ ] Test Bluetooth (Community testing welcome!)
+* [ ] Test built-in audio (Community testing welcome!)
 * [ ] Clean Windows 11 test
-* [ ] Test HyperX
-* [ ] Test another USB device
-* [ ] Test Bluetooth
-* [ ] Test built-in audio
-* [ ] Verify Windows volume never changes
-* [ ] Verify limiter still works
+* [ ] No `DisableProtectedAudioDG` requirement *(Pending Phase B Microsoft Signing)*
+* [ ] Secure Boot ON compatibility *(Pending Phase B Microsoft Signing)*
 
 #### 🔑 Phase B — Microsoft Signing
 * [ ] Create Hardware Dev Center / Partner Center account

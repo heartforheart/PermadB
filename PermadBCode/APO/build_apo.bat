@@ -25,4 +25,13 @@ if %ERRORLEVEL% NEQ 0 (
 )
 
 echo [SUCCESS] PermadBApo.dll built successfully!
+
+echo Generating Driver Catalog (PermadBApo.cat)...
+makecat -v PermadBApo.cdf
+if %ERRORLEVEL% NEQ 0 (
+    echo [WARNING] Catalog generation failed.
+) else (
+    echo [SUCCESS] PermadBApo.cat generated successfully!
+)
+
 endlocal

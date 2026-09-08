@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Windows.Forms;
+using System.Text.RegularExpressions;
 using Microsoft.Win32;
 
 namespace PermadB.Uninstaller;
@@ -273,6 +274,66 @@ static class Program
         {
             const string logPath = @"C:\Users\Public\permadb_apo.log";
             if (File.Exists(logPath)) File.Delete(logPath);
+        }
+        catch { }
+
+        // 6. Delete staged driver package from DriverStore via pnputil
+        try
+        {
+            string? oemInf = null;
+            try
+            {
+                using var permadbKey = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\PermadB");
+                oemInf = permadbKey?.GetValue("DriverOemInf") as string;
+            }
+            catch { }
+
+            if (string.IsNullOrEmpty(oemInf))
+            {
+                try
+                {
+                    var psiEnum = new ProcessStartInfo("pnputil.exe", "/enum-drivers")
+                    {
+                        CreateNoWindow = true,
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true
+                    };
+                    var procEnum = Process.Start(psiEnum);
+                    if (procEnum != null)
+                    {
+                        var text = procEnum.StandardOutput.ReadToEnd();
+                        procEnum.WaitForExit(5000);
+
+                        var matches = Regex.Matches(
+                            text,
+                            @"Published Name\s*:\s*(oem\d+\.inf)[\s\S]*?Original Name\s*:\s*PermadBApo\.inf",
+                            RegexOptions.IgnoreCase
+                        );
+                        if (matches.Count > 0)
+                        {
+                            oemInf = matches[0].Groups[1].Value.Trim();
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            if (!string.IsNullOrEmpty(oemInf))
+            {
+                var psiDel = new ProcessStartInfo("pnputil.exe", $"/delete-driver {oemInf} /uninstall /force")
+                {
+                    CreateNoWindow = true,
+                    UseShellExecute = false
+                };
+                var procDel = Process.Start(psiDel);
+                procDel?.WaitForExit(10000);
+            }
+
+            try
+            {
+                Registry.LocalMachine.DeleteSubKeyTree(@"SOFTWARE\PermadB", false);
+            }
+            catch { }
         }
         catch { }
     }

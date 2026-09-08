@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Reflection;
+using System.Text.RegularExpressions;
 using Microsoft.Win32;
 
 namespace PermadB.Installer;
@@ -93,6 +94,50 @@ public static class InstallerEngine
             catch (Exception ex)
             {
                 Console.WriteLine($"[InstallApo] Warning setting DisableProtectedAudioDG: {ex.Message}");
+            }
+
+            progressCallback?.Invoke("Staging APO driver package into Windows DriverStore...", 45);
+            try
+            {
+                var infPath = Path.Combine(destinationDir, "PermadBApo.inf");
+                if (!File.Exists(infPath))
+                {
+                    infPath = Path.Combine(destinationDir, "driver", "PermadBApo.inf");
+                }
+
+                if (File.Exists(infPath))
+                {
+                    var pnpPsi = new ProcessStartInfo("pnputil.exe", $"/add-driver \"{infPath}\" /install")
+                    {
+                        CreateNoWindow = true,
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true
+                    };
+                    var pnpProc = Process.Start(pnpPsi);
+                    if (pnpProc != null)
+                    {
+                        var output = pnpProc.StandardOutput.ReadToEnd();
+                        pnpProc.WaitForExit(10000);
+                        Console.WriteLine($"[InstallApo] pnputil output:\n{output}");
+
+                        var match = Regex.Match(output, @"Published Name\s*:\s*(oem\d+\.inf)", RegexOptions.IgnoreCase);
+                        if (match.Success)
+                        {
+                            var oemInf = match.Groups[1].Value.Trim();
+                            try
+                            {
+                                using var permadbKey = Registry.LocalMachine.CreateSubKey(@"SOFTWARE\PermadB", true);
+                                permadbKey?.SetValue("DriverOemInf", oemInf, RegistryValueKind.String);
+                            }
+                            catch { }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[InstallApo] Warning staging driver with pnputil: {ex.Message}");
             }
 
             progressCallback?.Invoke("Registering PermadB Limiter APO...", 50);

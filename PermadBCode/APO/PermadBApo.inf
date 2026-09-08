@@ -1,0 +1,87 @@
+;
+; PermadBApo.inf
+; Audio Processing Object INF for PermadB Limiter APO
+; Class: AudioProcessingObject
+;
+
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = AudioProcessingObject
+ClassGuid   = {5989fce8-9cd0-467d-8a6a-5419e31529d4}
+Provider    = %ProviderName%
+DriverVer   = 09/08/2026,1.0.0.0
+CatalogFile = PermadBApo.cat
+PnpLockDown = 1
+
+[Manufacturer]
+%MfgName% = PermadBAPO,NTamd64.10.0...22000
+
+[PermadBAPO.NTamd64.10.0...22000]
+%Apo.ComponentDesc% = PermadBAPO_Install, SWC\VEN_PERMADB&AUDIO_EFFECTPACK_LIMITER
+
+[PermadBAPO_Install.NTamd64]
+AddReg    = PermadBAPO_AddReg
+CopyFiles = PermadBAPO_CopyFiles
+
+[PermadBAPO_CopyFiles]
+PermadBApo.dll
+
+[PermadBAPO_Install.NTamd64.Services]
+AddService = ,2    ; No function driver, install a null driver for software component
+
+[PermadBAPO_AddReg]
+; COM Classes CLSID registration for the Limiter APO
+HKR,Classes\CLSID\%PERMADB_LIMITER_APO_CLSID%,,,%APO_FriendlyName%
+HKR,Classes\CLSID\%PERMADB_LIMITER_APO_CLSID%\InProcServer32,,%REG_EXPAND_SZ%,%13%\PermadBApo.dll
+HKR,Classes\CLSID\%PERMADB_LIMITER_APO_CLSID%\InProcServer32,ThreadingModel,,"Both"
+
+; AudioEngine AudioProcessingObjects registration
+HKR,AudioEngine\AudioProcessingObjects\%PERMADB_LIMITER_APO_CLSID%,"FriendlyName",,%APO_FriendlyName%
+HKR,AudioEngine\AudioProcessingObjects\%PERMADB_LIMITER_APO_CLSID%,"Copyright",,%Copyright%
+HKR,AudioEngine\AudioProcessingObjects\%PERMADB_LIMITER_APO_CLSID%,"MajorVersion",%REG_DWORD%,1
+HKR,AudioEngine\AudioProcessingObjects\%PERMADB_LIMITER_APO_CLSID%,"MinorVersion",%REG_DWORD%,0
+HKR,AudioEngine\AudioProcessingObjects\%PERMADB_LIMITER_APO_CLSID%,"Flags",%REG_DWORD%,%APO_FLAG_DEFAULT%
+HKR,AudioEngine\AudioProcessingObjects\%PERMADB_LIMITER_APO_CLSID%,"MinInputConnections",%REG_DWORD%,1
+HKR,AudioEngine\AudioProcessingObjects\%PERMADB_LIMITER_APO_CLSID%,"MaxInputConnections",%REG_DWORD%,1
+HKR,AudioEngine\AudioProcessingObjects\%PERMADB_LIMITER_APO_CLSID%,"MinOutputConnections",%REG_DWORD%,1
+HKR,AudioEngine\AudioProcessingObjects\%PERMADB_LIMITER_APO_CLSID%,"MaxOutputConnections",%REG_DWORD%,1
+HKR,AudioEngine\AudioProcessingObjects\%PERMADB_LIMITER_APO_CLSID%,"MaxInstances",%REG_DWORD%,0xffffffff
+HKR,AudioEngine\AudioProcessingObjects\%PERMADB_LIMITER_APO_CLSID%,"NumAPOInterfaces",%REG_DWORD%,1
+HKR,AudioEngine\AudioProcessingObjects\%PERMADB_LIMITER_APO_CLSID%,"APOInterface0",,%APO_INTERFACE_IAPO%
+
+; Friendly Name
+HKR,,FriendlyName,,%Apo.ComponentDesc%
+
+[SourceDisksNames]
+1 = %DiskName%
+
+[SourceDisksFiles]
+PermadBApo.dll = 1
+
+[DestinationDirs]
+PermadBAPO_CopyFiles = 13 ; Package's DriverStore directory
+
+[SignatureAttributes]
+PermadBApo.dll = SignatureAttributes.PETrust
+
+[SignatureAttributes.PETrust]
+PETrust = true
+
+[Strings]
+ProviderName                = "PermadB"
+MfgName                     = "PermadB Project"
+DiskName                    = "PermadB APO Installation Disk"
+Apo.ComponentDesc           = "PermadB Audio Processing Object"
+APO_FriendlyName            = "PermadB Limiter APO"
+Copyright                   = "PermadB"
+
+PERMADB_LIMITER_APO_CLSID   = "{968ff234-1895-49f1-8b97-9d9075eb25b6}"
+APO_INTERFACE_IAPO          = "{FD7F2B29-24D0-4B5C-B177-592C39F9CA10}"
+
+; APO Flags: 15 (APO_FLAG_FRAMESPERSECOND_MUST_MATCH | APO_FLAG_BITSPERSAMPLE_MUST_MATCH | APO_FLAG_MIXER | APO_FLAG_DEFAULT)
+APO_FLAG_DEFAULT            = 0x0000000F
+
+REG_SZ                      = 0x00000000
+REG_MULTI_SZ                = 0x00010000
+REG_DWORD                   = 0x00010001
+REG_EXPAND_SZ               = 0x00020000

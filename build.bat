@@ -32,6 +32,17 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b %ERRORLEVEL%
 )
 copy /y "%~dp0PermadBCode\APO\PermadBApo.dll" "%~dp0dist\PermadBApo.dll" >nul
+copy /y "%~dp0PermadBCode\APO\PermadBApo.inf" "%~dp0dist\PermadBApo.inf" >nul
+copy /y "%~dp0PermadBCode\APO\PermadBApo.cat" "%~dp0dist\PermadBApo.cat" >nul
+if not exist "%~dp0dist\driver" mkdir "%~dp0dist\driver"
+copy /y "%~dp0PermadBCode\APO\PermadBApo.dll" "%~dp0dist\driver\PermadBApo.dll" >nul
+copy /y "%~dp0PermadBCode\APO\PermadBApo.inf" "%~dp0dist\driver\PermadBApo.inf" >nul
+copy /y "%~dp0PermadBCode\APO\PermadBApo.cat" "%~dp0dist\driver\PermadBApo.cat" >nul
+
+if not exist "%~dp0driver_package" mkdir "%~dp0driver_package"
+copy /y "%~dp0PermadBCode\APO\PermadBApo.dll" "%~dp0driver_package\PermadBApo.dll" >nul
+copy /y "%~dp0PermadBCode\APO\PermadBApo.inf" "%~dp0driver_package\PermadBApo.inf" >nul
+copy /y "%~dp0PermadBCode\APO\PermadBApo.cat" "%~dp0driver_package\PermadBApo.cat" >nul
 
 echo.
 echo [4/5] Compiling Uninstaller (.NET 9)...
