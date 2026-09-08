@@ -64,11 +64,10 @@ public class AudioEngine : IMMNotificationClient, IDisposable
     private AudioEndpointVolumeNotificationDelegate? _volumeDelegate;
     private bool _isAdjustingVolume = false;
 
-    // Transient Limiter state
-    private DateTime _lastDuckTime = DateTime.MinValue;
-    private long _spikesClampedCount = 0;
-    private bool _isCurrentlyClamping = false;
+    // Audio safety state
     private float _userBaselineVolume = -1.0f;
+    private DateTime _lastSessionScan = DateTime.MinValue;
+    private List<AppSessionInfo> _cachedAppSessions = new();
 
     // Process name and baseline volume tracking for per-app Windows Sound Mixer sessions
     private readonly ConcurrentDictionary<int, string> _processNameCache = new();
@@ -627,103 +626,94 @@ public class AudioEngine : IMMNotificationClient, IDisposable
             bool isExceedingCeiling = estimatedPeakSpl > profile.TargetSafeDbSpl;
             if (isExceedingCeiling)
             {
-                _spikesClampedCount++;
                 OnPeakClamped?.Invoke(peakDbfs);
             }
 
-            // Per-Application Sound Mixer Guard: Inspect & level games and applications in Windows Volume Mixer
-            var appSessionsList = new List<AppSessionInfo>();
-            try
+            // Per-Application Sound Mixer: Only scan sessions periodically (every 2s) to keep CPU at near 0%
+            if ((DateTime.UtcNow - _lastSessionScan).TotalSeconds > 2.0)
             {
-                var sessionManager = _activeDevice.AudioSessionManager;
-                sessionManager.RefreshSessions();
-                var sessions = sessionManager.Sessions;
-                int sessionCount = sessions.Count;
-
-                for (int i = 0; i < sessionCount; i++)
+                _lastSessionScan = DateTime.UtcNow;
+                var appSessionsList = new List<AppSessionInfo>();
+                try
                 {
-                    var s = sessions[i];
-                    if (s.State == AudioSessionState.AudioSessionStateExpired) continue;
+                    var sessionManager = _activeDevice.AudioSessionManager;
+                    sessionManager.RefreshSessions();
+                    var sessions = sessionManager.Sessions;
+                    int sessionCount = sessions.Count;
 
-                    var pid = (int)s.GetProcessID;
-                    string procName = "System Sounds";
-                    if (pid > 0)
+                    for (int i = 0; i < sessionCount; i++)
                     {
-                        procName = _processNameCache.GetOrAdd(pid, p =>
+                        var s = sessions[i];
+                        if (s.State == AudioSessionState.AudioSessionStateExpired) continue;
+
+                        var pid = (int)s.GetProcessID;
+                        string procName = "System Sounds";
+                        if (pid > 0)
                         {
-                            try { return Process.GetProcessById(p).ProcessName; }
-                            catch { return $"PID {p}"; }
+                            procName = _processNameCache.GetOrAdd(pid, p =>
+                            {
+                                try { return Process.GetProcessById(p).ProcessName; }
+                                catch { return $"PID {p}"; }
+                            });
+                        }
+
+                        var appVol = s.SimpleAudioVolume.Volume;
+                        var appMeter = s.AudioMeterInformation;
+                        var rawAppPeak = appMeter.MasterPeakValue;
+                        var appMute = s.SimpleAudioVolume.Mute;
+
+                        var smoothedPeak = _appSmoothedPeak.AddOrUpdate(
+                            procName,
+                            rawAppPeak,
+                            (_, prev) => Math.Max(rawAppPeak, prev * 0.75f + rawAppPeak * 0.25f)
+                        );
+
+                        var appPeakDbfs = smoothedPeak > 0.00001f ? 20.0f * (float)Math.Log10(smoothedPeak) : -96.0f;
+                        bool isVoip = CommunicationApps.Contains(procName);
+                        float crestFactor = isVoip ? 15.0f : 11.0f;
+                        var appEstPeakSpl = Math.Clamp(profile.EstimatedMaxDbSpl + appPeakDbfs + masterDbAtten, 25.0f, 120.0f);
+                        var appEstContinuousSpl = Math.Clamp(appEstPeakSpl - crestFactor, 25.0f, 105.0f);
+
+                        bool isAppClamped = false;
+                        if (_config.Settings.AppVolumeOverrides.TryGetValue(procName, out var userCapPercent))
+                        {
+                            var userCapScalar = Math.Clamp(userCapPercent / 100.0f, 0.0f, 1.0f);
+                            if (appVol > userCapScalar + 0.02f)
+                            {
+                                s.SimpleAudioVolume.Volume = userCapScalar;
+                                appVol = userCapScalar;
+                                isAppClamped = true;
+                            }
+                        }
+                        else if (string.Equals(procName, "System Sounds", StringComparison.OrdinalIgnoreCase) ||
+                                 procName.Contains("nvcontainer", StringComparison.OrdinalIgnoreCase) ||
+                                 procName.Contains("nvidia", StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (appVol < 0.99f)
+                            {
+                                s.SimpleAudioVolume.Volume = 1.0f;
+                                appVol = 1.0f;
+                            }
+                        }
+
+                        appSessionsList.Add(new AppSessionInfo
+                        {
+                            ProcessId = pid,
+                            ProcessName = procName,
+                            DisplayName = string.IsNullOrWhiteSpace(s.DisplayName) ? procName : s.DisplayName,
+                            VolumePercent = (float)Math.Round(appVol * 100.0f, 1),
+                            PeakValue = (float)Math.Round(smoothedPeak, 3),
+                            PeakDbfs = (float)Math.Round(appPeakDbfs, 1),
+                            EstimatedDbSpl = (float)Math.Round(appEstContinuousSpl, 1),
+                            IsMuted = appMute,
+                            IsClamped = isAppClamped,
+                            IsUnsafe = false
                         });
                     }
-
-                    var appVol = s.SimpleAudioVolume.Volume;
-                    var appMeter = s.AudioMeterInformation;
-                    var rawAppPeak = appMeter.MasterPeakValue;
-                    var appMute = s.SimpleAudioVolume.Mute;
-
-                    // Smooth application peak using exponential moving average (100ms window)
-                    var smoothedPeak = _appSmoothedPeak.AddOrUpdate(
-                        procName,
-                        rawAppPeak,
-                        (_, prev) => Math.Max(rawAppPeak, prev * 0.75f + rawAppPeak * 0.25f)
-                    );
-
-                    var appPeakDbfs = smoothedPeak > 0.00001f ? 20.0f * (float)Math.Log10(smoothedPeak) : -96.0f;
-
-                    bool isVoip = CommunicationApps.Contains(procName);
-                    // Human voice has ~15 dB crest factor; games/media have ~11 dB crest factor
-                    float crestFactor = isVoip ? 15.0f : 11.0f;
-
-                    // Estimated real-world acoustic peak SPL produced by this specific app
-                    var appEstPeakSpl = profile.EstimatedMaxDbSpl + appPeakDbfs + masterDbAtten;
-                    appEstPeakSpl = Math.Clamp(appEstPeakSpl, 25.0f, 120.0f);
-
-                    // Continuous equivalent dBA (LAeq / RMS) for human display and safety monitoring
-                    var appEstContinuousSpl = Math.Clamp(appEstPeakSpl - crestFactor, 25.0f, 105.0f);
-
-                    bool isAppClamped = false;
-                    bool isAppUnsafe = false;
-
-                    // 1. Check user-defined manual cap for this application (if any)
-                    if (_config.Settings.AppVolumeOverrides.TryGetValue(procName, out var userCapPercent))
-                    {
-                        var userCapScalar = Math.Clamp(userCapPercent / 100.0f, 0.0f, 1.0f);
-                        if (appVol > userCapScalar + 0.02f)
-                        {
-                            s.SimpleAudioVolume.Volume = userCapScalar;
-                            appVol = userCapScalar;
-                            isAppClamped = true;
-                        }
-                    }
-                    // 2. Proactively restore System Sounds and NVIDIA Container to 100% if ducked by older versions
-                    else if (string.Equals(procName, "System Sounds", StringComparison.OrdinalIgnoreCase) ||
-                             procName.Contains("nvcontainer", StringComparison.OrdinalIgnoreCase) ||
-                             procName.Contains("nvidia", StringComparison.OrdinalIgnoreCase))
-                    {
-                        if (appVol < 0.99f)
-                        {
-                            s.SimpleAudioVolume.Volume = 1.0f;
-                            appVol = 1.0f;
-                            Console.WriteLine($"[AudioEngine] Restored '{procName}' back to 100% in Windows Sound Mixer.");
-                        }
-                    }
-
-                    appSessionsList.Add(new AppSessionInfo
-                    {
-                        ProcessId = pid,
-                        ProcessName = procName,
-                        DisplayName = string.IsNullOrWhiteSpace(s.DisplayName) ? procName : s.DisplayName,
-                        VolumePercent = (float)Math.Round(appVol * 100.0f, 1),
-                        PeakValue = (float)Math.Round(smoothedPeak, 3),
-                        PeakDbfs = (float)Math.Round(appPeakDbfs, 1),
-                        EstimatedDbSpl = (float)Math.Round(appEstContinuousSpl, 1),
-                        IsMuted = appMute,
-                        IsClamped = isAppClamped,
-                        IsUnsafe = isAppUnsafe
-                    });
+                    _cachedAppSessions = appSessionsList;
                 }
+                catch { }
             }
-            catch { }
 
             var m = new AudioMetrics
             {
@@ -732,8 +722,8 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                 EstimatedDbSpl = (float)Math.Round(estimatedContinuousSpl, 1),
                 CurrentVolumePercent = (float)Math.Round(volScalar * 100.0f, 1),
                 SafeCeilingPercent = profile.SafeCeilingPercent,
-                IsClamping = _isCurrentlyClamping,
-                SpikesClampedTotal = _spikesClampedCount,
+                IsClamping = false,
+                SpikesClampedTotal = 0,
                 ChannelPeaks = channelPeaks,
                 ActiveDeviceId = profile.DeviceId,
                 ActiveDeviceName = profile.DeviceName,
@@ -742,8 +732,8 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                 ApplyToAllDevices = _config.Settings.ApplyToAllDevices,
                 ProtectMicrophoneInputs = _config.Settings.ProtectMicrophoneInputs,
                 ProtectedDevicesCount = _cachedProtectedCount,
-                AppMixerGuardEnabled = _config.Settings.AppMixerGuardEnabled,
-                AppSessions = appSessionsList
+                AppMixerGuardEnabled = false,
+                AppSessions = _cachedAppSessions
             };
 
             LatestMetrics = m;
