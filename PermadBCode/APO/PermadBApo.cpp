@@ -8,32 +8,74 @@ static volatile LONG g_cComponents = 0;
 static volatile LONG g_cServerLocks = 0;
 static HMODULE g_hModule = NULL;
 
+static void LogApo(const wchar_t* format, ...)
+{
+    wchar_t buf[1024];
+    va_list args;
+    va_start(args, format);
+    _vsnwprintf_s(buf, _countof(buf), _TRUNCATE, format, args);
+    va_end(args);
+
+    OutputDebugStringW(L"[PermadBApo] ");
+    OutputDebugStringW(buf);
+    OutputDebugStringW(L"\n");
+
+    HANDLE hLog = CreateFileW(
+        L"C:\\Users\\Public\\permadb_apo.log",
+        FILE_APPEND_DATA,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        NULL,
+        OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL
+    );
+    if (hLog != INVALID_HANDLE_VALUE)
+    {
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        char line[1200];
+        int len = sprintf_s(line, "[%04d-%02d-%02d %02d:%02d:%02d.%03d | PID %lu] %ls\r\n",
+            st.wYear, st.wMonth, st.wDay,
+            st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+            GetCurrentProcessId(), buf);
+        DWORD written = 0;
+        WriteFile(hLog, line, len, &written, NULL);
+        CloseHandle(hLog);
+    }
+}
+
 static const CRegAPOProperties<1> sm_RegProperties(
     CLSID_PermadBLimiterAPO,
     L"PermadB Limiter APO",
     L"Copyright (c) PermadB",
     1,
     0,
-    __uuidof(IAudioProcessingObjectRT),
+    __uuidof(IAudioProcessingObject),
     static_cast<APO_FLAG>(DEFAULT_APOREG_FLAGS | APO_FLAG_INPLACE),
     1, 1,
     1, 1,
     DEFAULT_APOREG_MAXINSTANCES
 );
 
-CPermadBLimiterAPO::CPermadBLimiterAPO() :
+CPermadBLimiterAPO::CPermadBLimiterAPO(IUnknown* pUnkOuter) :
     CBaseAudioProcessingObject(sm_RegProperties),
-    m_cRef(1),
+    m_nonDelegatingUnknown(this),
+    m_pUnkOuter(pUnkOuter ? pUnkOuter : &m_nonDelegatingUnknown),
     m_pTelemetry(nullptr),
+    m_hFile(INVALID_HANDLE_VALUE),
     m_hMapFile(NULL),
-    m_hEffectsChangedEvent(NULL)
+    m_hEffectsChangedEvent(NULL),
+    m_lastCommandSeq(0)
 {
     InterlockedIncrement(&g_cComponents);
+    LogApo(L"CPermadBLimiterAPO constructor called (pUnkOuter=%p, PID %lu)", pUnkOuter, GetCurrentProcessId());
     InitTelemetry();
+    LogApo(L"CPermadBLimiterAPO constructor finished (m_pTelemetry=%p)", m_pTelemetry);
 }
 
 CPermadBLimiterAPO::~CPermadBLimiterAPO()
 {
+    LogApo(L"CPermadBLimiterAPO destructor called (PID %lu)", GetCurrentProcessId());
     CleanupTelemetry();
     if (m_hEffectsChangedEvent != NULL)
     {
@@ -45,29 +87,31 @@ CPermadBLimiterAPO::~CPermadBLimiterAPO()
 
 void CPermadBLimiterAPO::InitTelemetry()
 {
-    // Create shared memory with NULL DACL (allowing audiodg under LOCAL SERVICE and user tools to access)
-    SECURITY_DESCRIPTOR sd;
-    if (InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION))
+    m_hFile = CreateFileW(
+        L"C:\\Users\\Public\\permadb_apo_telemetry.dat",
+        GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        NULL,
+        OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL
+    );
+
+    if (m_hFile != INVALID_HANDLE_VALUE)
     {
-        SetSecurityDescriptorDacl(&sd, TRUE, NULL, FALSE);
-        SECURITY_ATTRIBUTES sa;
-        sa.nLength = sizeof(sa);
-        sa.lpSecurityDescriptor = &sd;
-        sa.bInheritHandle = FALSE;
+        LARGE_INTEGER size;
+        size.QuadPart = sizeof(PermadBApoTelemetry);
+        SetFilePointerEx(m_hFile, size, NULL, FILE_BEGIN);
+        SetEndOfFile(m_hFile);
 
         m_hMapFile = CreateFileMappingW(
-            INVALID_HANDLE_VALUE,
-            &sa,
+            m_hFile,
+            NULL,
             PAGE_READWRITE,
             0,
             sizeof(PermadBApoTelemetry),
-            PERMADB_SHMEM_NAME
+            NULL
         );
-
-        if (m_hMapFile == NULL && GetLastError() == ERROR_ALREADY_EXISTS)
-        {
-            m_hMapFile = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, PERMADB_SHMEM_NAME);
-        }
 
         if (m_hMapFile != NULL)
         {
@@ -77,13 +121,59 @@ void CPermadBLimiterAPO::InitTelemetry()
 
             if (m_pTelemetry != nullptr)
             {
+                // If file already existed and has a valid command from the App:
+                if (m_pTelemetry->magic == PERMADB_TELEMETRY_MAGIC &&
+                    m_pTelemetry->targetCeilingLinear >= 0.001f &&
+                    m_pTelemetry->targetCeilingLinear <= 1.0f)
+                {
+                    m_limiter.SetCeilingLinear(m_pTelemetry->targetCeilingLinear);
+                    m_limiter.SetEnabled(m_pTelemetry->isEnabled != 0);
+                    m_lastCommandSeq = m_pTelemetry->commandSeq;
+                }
+                else
+                {
+                    m_pTelemetry->targetCeilingLinear = 0.891250938f;
+                    m_pTelemetry->targetCeilingDbfs = -1.0f;
+                    m_pTelemetry->isEnabled = 1;
+                    m_pTelemetry->commandSeq = 1;
+                    m_lastCommandSeq = 1;
+                }
+
                 m_pTelemetry->magic = PERMADB_TELEMETRY_MAGIC;
-                m_pTelemetry->version = 1;
+                m_pTelemetry->version = 2;
                 m_pTelemetry->audiodgPid = GetCurrentProcessId();
-                m_pTelemetry->fixedGainDb = -12.0f;
-                m_pTelemetry->fixedGainLinear = 0.25118864f; // 10^(-12/20)
+                m_pTelemetry->sampleRate = 48000;
+                m_pTelemetry->channelCount = 2;
+                m_pTelemetry->limiterActivations = 0;
+                m_pTelemetry->processCount = 0;
+                m_pTelemetry->totalFramesProcessed = 0;
+                m_pTelemetry->configuredCeilingDbfs = m_limiter.GetCeilingDbfs();
+                m_pTelemetry->configuredCeilingLinear = m_limiter.GetCeilingLinear();
+                m_pTelemetry->lastPeakInLinear = 0.0f;
+                m_pTelemetry->lastPeakOutLinear = 0.0f;
+                m_pTelemetry->lastPeakInDbfs = -96.0f;
+                m_pTelemetry->lastPeakOutDbfs = -96.0f;
+                m_pTelemetry->maxObservedInDbfs = -96.0f;
+                m_pTelemetry->maxObservedOutDbfs = -96.0f;
+                m_pTelemetry->currentGainReductionDb = 0.0f;
+                m_pTelemetry->maxGainReductionDb = 0.0f;
+                m_pTelemetry->lastProcessTick = GetTickCount64();
+                LogApo(L"Telemetry initialized via telemetry.dat (PID %lu, Phase 2 v2, ceiling=%.1f%%)",
+                    GetCurrentProcessId(), m_limiter.GetCeilingLinear() * 100.0f);
+            }
+            else
+            {
+                LogApo(L"InitTelemetry: MapViewOfFile failed with error %lu", GetLastError());
             }
         }
+        else
+        {
+            LogApo(L"InitTelemetry: CreateFileMappingW failed with error %lu", GetLastError());
+        }
+    }
+    else
+    {
+        LogApo(L"InitTelemetry: CreateFileW failed with error %lu", GetLastError());
     }
 }
 
@@ -99,101 +189,174 @@ void CPermadBLimiterAPO::CleanupTelemetry()
         CloseHandle(m_hMapFile);
         m_hMapFile = NULL;
     }
+    if (m_hFile != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(m_hFile);
+        m_hFile = INVALID_HANDLE_VALUE;
+    }
 }
 
-void CPermadBLimiterAPO::UpdateTelemetry(UINT32 u32Frames, UINT32 u32Channels, const FLOAT32* pf32In, const FLOAT32* pf32Out)
+void CPermadBLimiterAPO::UpdateTelemetry(UINT32 u32Frames, UINT32 u32Channels, FLOAT32 lastInLinear, FLOAT32 lastOutLinear)
 {
     if (!m_pTelemetry) return;
 
-    UINT32 totalSamples = u32Frames * u32Channels;
-    FLOAT32 peakIn = 0.0f;
-    FLOAT32 peakOut = 0.0f;
-
-    for (UINT32 i = 0; i < totalSamples; ++i)
-    {
-        FLOAT32 absIn = std::abs(pf32In[i]);
-        if (absIn > peakIn) peakIn = absIn;
-
-        FLOAT32 absOut = std::abs(pf32Out[i]);
-        if (absOut > peakOut) peakOut = absOut;
-    }
-
-    FLOAT32 inDbfs = peakIn > 0.00001f ? 20.0f * std::log10(peakIn) : -96.0f;
-    FLOAT32 outDbfs = peakOut > 0.00001f ? 20.0f * std::log10(peakOut) : -96.0f;
+    CPermadBLimiter::Metrics m = m_limiter.GetMetrics(lastInLinear, lastOutLinear);
 
     m_pTelemetry->sampleRate = static_cast<UINT32>(GetFramesPerSecond());
     m_pTelemetry->channelCount = u32Channels;
+    m_pTelemetry->limiterActivations = static_cast<UINT32>(m.limiterActivations);
     m_pTelemetry->processCount++;
     m_pTelemetry->totalFramesProcessed += u32Frames;
-    m_pTelemetry->lastPeakInLinear = peakIn;
-    m_pTelemetry->lastPeakOutLinear = peakOut;
-    m_pTelemetry->lastPeakInDbfs = inDbfs;
-    m_pTelemetry->lastPeakOutDbfs = outDbfs;
+    m_pTelemetry->configuredCeilingDbfs = m.configuredCeilingDbfs;
+    m_pTelemetry->configuredCeilingLinear = m.configuredCeilingLinear;
+    m_pTelemetry->lastPeakInLinear = m.lastPeakInLinear;
+    m_pTelemetry->lastPeakOutLinear = m.lastPeakOutLinear;
+    m_pTelemetry->lastPeakInDbfs = m.lastPeakInDbfs;
+    m_pTelemetry->lastPeakOutDbfs = m.lastPeakOutDbfs;
+    m_pTelemetry->maxObservedInDbfs = m.maxObservedInDbfs;
+    m_pTelemetry->maxObservedOutDbfs = m.maxObservedOutDbfs;
+    m_pTelemetry->currentGainReductionDb = m.currentGainReductionDb;
+    m_pTelemetry->maxGainReductionDb = m.maxGainReductionDb;
     m_pTelemetry->lastProcessTick = GetTickCount64();
 }
 
-// IUnknown
-STDMETHODIMP CPermadBLimiterAPO::QueryInterface(REFIID riid, void** ppv)
+// --------------------------------------------------------------------------
+// CNonDelegatingUnknown (Controls lifetime and interface exposure)
+// --------------------------------------------------------------------------
+CNonDelegatingUnknown::CNonDelegatingUnknown(CPermadBLimiterAPO* pOwner) :
+    m_pOwner(pOwner),
+    m_cRef(1)
+{
+}
+
+STDMETHODIMP CNonDelegatingUnknown::QueryInterface(REFIID riid, void** ppv)
 {
     if (!ppv) return E_POINTER;
     *ppv = nullptr;
 
+    WCHAR iidStr[64] = { 0 };
+    StringFromGUID2(riid, iidStr, 64);
+
     if (riid == IID_IUnknown)
     {
-        *ppv = static_cast<IAudioProcessingObject*>(this);
+        *ppv = static_cast<IUnknown*>(this);
     }
     else if (riid == __uuidof(IAudioProcessingObject))
     {
-        *ppv = static_cast<IAudioProcessingObject*>(this);
+        *ppv = static_cast<IAudioProcessingObject*>(m_pOwner);
     }
     else if (riid == __uuidof(IAudioProcessingObjectConfiguration))
     {
-        *ppv = static_cast<IAudioProcessingObjectConfiguration*>(this);
+        *ppv = static_cast<IAudioProcessingObjectConfiguration*>(m_pOwner);
     }
     else if (riid == __uuidof(IAudioProcessingObjectRT))
     {
-        *ppv = static_cast<IAudioProcessingObjectRT*>(this);
+        *ppv = static_cast<IAudioProcessingObjectRT*>(m_pOwner);
     }
     else if (riid == __uuidof(IAudioSystemEffects))
     {
-        *ppv = static_cast<IAudioSystemEffects*>(this);
+        *ppv = static_cast<IAudioSystemEffects*>(m_pOwner);
     }
     else if (riid == __uuidof(IAudioSystemEffects2))
     {
-        *ppv = static_cast<IAudioSystemEffects2*>(this);
+        *ppv = static_cast<IAudioSystemEffects2*>(m_pOwner);
     }
     else
     {
+        LogApo(L"NonDelegating QI: %s -> E_NOINTERFACE", iidStr);
         return E_NOINTERFACE;
     }
 
-    AddRef();
+    LogApo(L"NonDelegating QI: %s -> S_OK", iidStr);
+    reinterpret_cast<IUnknown*>(*ppv)->AddRef();
     return S_OK;
+}
+
+STDMETHODIMP_(ULONG) CNonDelegatingUnknown::AddRef()
+{
+    ULONG c = InterlockedIncrement(&m_cRef);
+    LogApo(L"NonDelegating AddRef -> %lu", c);
+    return c;
+}
+
+STDMETHODIMP_(ULONG) CNonDelegatingUnknown::Release()
+{
+    ULONG c = InterlockedDecrement(&m_cRef);
+    LogApo(L"NonDelegating Release -> %lu", c);
+    if (c == 0)
+    {
+        delete m_pOwner;
+    }
+    return c;
+}
+
+// --------------------------------------------------------------------------
+// Delegating IUnknown (delegates to m_pUnkOuter)
+// --------------------------------------------------------------------------
+STDMETHODIMP CPermadBLimiterAPO::QueryInterface(REFIID riid, void** ppv)
+{
+    return m_pUnkOuter->QueryInterface(riid, ppv);
 }
 
 STDMETHODIMP_(ULONG) CPermadBLimiterAPO::AddRef()
 {
-    return InterlockedIncrement(&m_cRef);
+    return m_pUnkOuter->AddRef();
 }
 
 STDMETHODIMP_(ULONG) CPermadBLimiterAPO::Release()
 {
-    ULONG ulRef = InterlockedDecrement(&m_cRef);
-    if (ulRef == 0)
-    {
-        delete this;
-    }
-    return ulRef;
+    return m_pUnkOuter->Release();
 }
 
 // IAudioProcessingObject
 STDMETHODIMP CPermadBLimiterAPO::Initialize(UINT32 cbDataSize, BYTE* pbyData)
 {
+    LogApo(L"Initialize called (cbDataSize=%u)", cbDataSize);
     if (cbDataSize != 0 && pbyData == nullptr) return E_INVALIDARG;
     if (cbDataSize == 0 && pbyData != nullptr) return E_INVALIDARG;
 
     m_bIsInitialized = true;
+    LogApo(L"Initialize succeeded");
     return S_OK;
+}
+
+STDMETHODIMP CPermadBLimiterAPO::Reset()
+{
+    LogApo(L"Reset called");
+    m_limiter.Reset();
+    return CBaseAudioProcessingObject::Reset();
+}
+
+// IAudioProcessingObjectConfiguration
+STDMETHODIMP CPermadBLimiterAPO::LockForProcess(
+    UINT32 u32NumInputConnections,
+    APO_CONNECTION_DESCRIPTOR** ppInputConnections,
+    UINT32 u32NumOutputConnections,
+    APO_CONNECTION_DESCRIPTOR** ppOutputConnections)
+{
+    LogApo(L"LockForProcess called (inConns=%u, outConns=%u)", u32NumInputConnections, u32NumOutputConnections);
+    HRESULT hr = CBaseAudioProcessingObject::LockForProcess(
+        u32NumInputConnections,
+        ppInputConnections,
+        u32NumOutputConnections,
+        ppOutputConnections
+    );
+    if (SUCCEEDED(hr))
+    {
+        uint32_t sampleRate = static_cast<uint32_t>(GetFramesPerSecond());
+        uint32_t channels = static_cast<uint32_t>(GetSamplesPerFrame());
+        m_limiter.Init(sampleRate, channels);
+    }
+    LogApo(L"LockForProcess result: 0x%08X (rate=%.0f, channels=%u, m_bIsLocked=%d, lookaheadFrames=%u)",
+        hr, GetFramesPerSecond(), GetSamplesPerFrame(), m_bIsLocked ? 1 : 0, m_limiter.GetLookaheadFrames());
+    return hr;
+}
+
+STDMETHODIMP CPermadBLimiterAPO::UnlockForProcess()
+{
+    LogApo(L"UnlockForProcess called");
+    m_limiter.Reset();
+    return CBaseAudioProcessingObject::UnlockForProcess();
 }
 
 // IAudioProcessingObjectRT
@@ -220,27 +383,70 @@ STDMETHODIMP_(void) CPermadBLimiterAPO::APOProcess(
 
     if (pIn->u32BufferFlags == BUFFER_SILENT)
     {
+        m_limiter.Reset();
         ZeroMemory(pf32Out, sizeof(FLOAT32) * u32Frames * u32Channels);
         pOut->u32ValidFrameCount = u32Frames;
         pOut->u32BufferFlags = BUFFER_SILENT;
         return;
     }
 
-    // Phase 1 Requirement: Apply fixed -12 dB gain
-    // Gain factor: 10^(-12 / 20) = 0.25118864f
-    const FLOAT32 kGain = 0.25118864f;
-
+    // Measure input peak of this buffer for telemetry
+    FLOAT32 peakIn = 0.0f;
     UINT32 totalSamples = u32Frames * u32Channels;
     for (UINT32 i = 0; i < totalSamples; ++i)
     {
-        pf32Out[i] = pf32In[i] * kGain;
+        FLOAT32 absIn = std::abs(pf32In[i]);
+        if (absIn > peakIn) peakIn = absIn;
+    }
+
+    // Dynamic ceiling control from PermadB App
+    if (m_pTelemetry)
+    {
+        UINT32 currentSeq = m_pTelemetry->commandSeq;
+        if (currentSeq != m_lastCommandSeq)
+        {
+            m_lastCommandSeq = currentSeq;
+            float targetLin = m_pTelemetry->targetCeilingLinear;
+            bool enabled = (m_pTelemetry->isEnabled != 0);
+
+            if (targetLin >= 0.001f && targetLin <= 1.0f)
+            {
+                m_limiter.SetCeilingLinear(targetLin);
+                m_limiter.SetEnabled(enabled);
+                LogApo(L"Dynamic ceiling updated: %.1f%% (%.4f linear, %.2fdBFS, enabled=%d)",
+                    targetLin * 100.0f, targetLin, m_limiter.GetCeilingDbfs(), enabled ? 1 : 0);
+            }
+        }
+    }
+
+    // Phase 2: Real Lookahead Brickwall Safety Limiter
+    // Operates directly on PCM samples; zero real-time heap allocations.
+    m_limiter.Process(pf32In, pf32Out, u32Frames);
+
+    // Measure output peak of this buffer for telemetry
+    FLOAT32 peakOut = 0.0f;
+    for (UINT32 i = 0; i < totalSamples; ++i)
+    {
+        FLOAT32 absOut = std::abs(pf32Out[i]);
+        if (absOut > peakOut) peakOut = absOut;
     }
 
     pOut->u32ValidFrameCount = u32Frames;
     pOut->u32BufferFlags = BUFFER_VALID;
 
     // Update real-time telemetry
-    UpdateTelemetry(u32Frames, u32Channels, pf32In, pf32Out);
+    UpdateTelemetry(u32Frames, u32Channels, peakIn, peakOut);
+
+    if (m_pTelemetry)
+    {
+        UINT64 cnt = m_pTelemetry->processCount;
+        if (cnt <= 10 || (cnt % 5000 == 0))
+        {
+            LogApo(L"APOProcess [%llu]: frames=%u, in=%.2fdB, out=%.2fdB, maxOut=%.2fdB, maxGR=%.2fdB, act=%lu",
+                cnt, u32Frames, m_pTelemetry->lastPeakInDbfs, m_pTelemetry->lastPeakOutDbfs,
+                m_pTelemetry->maxObservedOutDbfs, m_pTelemetry->maxGainReductionDb, m_pTelemetry->limiterActivations);
+        }
+    }
 }
 
 // IAudioSystemEffects2
@@ -249,6 +455,8 @@ STDMETHODIMP CPermadBLimiterAPO::GetEffectsList(
     _Out_ UINT* pcEffects,
     _In_ HANDLE Event)
 {
+    LogApo(L"GetEffectsList called (Event=%p)", Event);
+
     if (!ppEffectsIds || !pcEffects) return E_POINTER;
 
     if (Event != NULL)
@@ -274,6 +482,7 @@ STDMETHODIMP CPermadBLimiterAPO::GetEffectsList(
     *ppEffectsIds = pGuid;
     *pcEffects = 1;
 
+    LogApo(L"GetEffectsList returning effect {72da89f2-2b62-4f38-9cf1-ec9e4f208c90}");
     return S_OK;
 }
 
@@ -310,14 +519,45 @@ public:
 
     STDMETHODIMP CreateInstance(IUnknown* pUnkOuter, REFIID riid, void** ppv) override
     {
-        if (pUnkOuter != nullptr) return CLASS_E_NOAGGREGATION;
-        if (!ppv) return E_POINTER;
+        WCHAR iidStr[64] = { 0 };
+        StringFromGUID2(riid, iidStr, 64);
+        LogApo(L"CPermadBLimiterClassFactory::CreateInstance called (pUnkOuter=%p, riid=%s)", pUnkOuter, iidStr);
 
-        CPermadBLimiterAPO* pApo = new (std::nothrow) CPermadBLimiterAPO();
-        if (!pApo) return E_OUTOFMEMORY;
+        if (!ppv)
+        {
+            LogApo(L"CreateInstance returning E_POINTER");
+            return E_POINTER;
+        }
+        *ppv = nullptr;
 
-        HRESULT hr = pApo->QueryInterface(riid, ppv);
-        pApo->Release();
+        if (pUnkOuter != nullptr && riid != IID_IUnknown)
+        {
+            LogApo(L"CreateInstance: aggregating but riid != IID_IUnknown, returning E_NOINTERFACE");
+            return E_NOINTERFACE;
+        }
+
+        LogApo(L"CreateInstance: allocating CPermadBLimiterAPO (pUnkOuter=%p)...", pUnkOuter);
+        CPermadBLimiterAPO* pApo = new (std::nothrow) CPermadBLimiterAPO(pUnkOuter);
+        if (!pApo)
+        {
+            LogApo(L"CreateInstance: allocation failed (new returned nullptr)");
+            return E_OUTOFMEMORY;
+        }
+
+        HRESULT hr;
+        if (pUnkOuter != nullptr)
+        {
+            *ppv = static_cast<IUnknown*>(pApo->GetNonDelegatingUnknown());
+            hr = S_OK;
+            LogApo(L"CreateInstance (aggregated): returning non-delegating IUnknown %p", *ppv);
+        }
+        else
+        {
+            hr = pApo->GetNonDelegatingUnknown()->QueryInterface(riid, ppv);
+            pApo->GetNonDelegatingUnknown()->Release();
+            LogApo(L"CreateInstance (non-aggregated): QueryInterface returned 0x%08X (ppv=%p)", hr, *ppv);
+        }
+
         return hr;
     }
 
@@ -334,6 +574,12 @@ public:
 // --------------------------------------------------------------------------
 STDAPI DllGetClassObject(REFCLSID rclsid, REFIID riid, LPVOID* ppv)
 {
+    WCHAR clsidStr[64] = { 0 };
+    WCHAR iidStr[64] = { 0 };
+    StringFromGUID2(rclsid, clsidStr, 64);
+    StringFromGUID2(riid, iidStr, 64);
+    LogApo(L"DllGetClassObject: CLSID=%s, IID=%s", clsidStr, iidStr);
+
     if (!ppv) return E_POINTER;
     *ppv = nullptr;
 
@@ -344,9 +590,11 @@ STDAPI DllGetClassObject(REFCLSID rclsid, REFIID riid, LPVOID* ppv)
 
         HRESULT hr = pFactory->QueryInterface(riid, ppv);
         pFactory->Release();
+        LogApo(L"DllGetClassObject returning 0x%08X", hr);
         return hr;
     }
 
+    LogApo(L"DllGetClassObject: CLASS_E_CLASSNOTAVAILABLE");
     return CLASS_E_CLASSNOTAVAILABLE;
 }
 
@@ -412,8 +660,9 @@ STDAPI DllRegisterServer()
     SetRegDword(HKEY_CLASSES_ROOT, apoKey, L"MaxOutputConnections", 1);
     SetRegDword(HKEY_CLASSES_ROOT, apoKey, L"MaxInstances", 0xFFFFFFFF);
     SetRegDword(HKEY_CLASSES_ROOT, apoKey, L"NumAPOInterfaces", 1);
-    SetRegKeyAndValue(HKEY_CLASSES_ROOT, apoKey, L"APOInterface0", L"{65589647-7974-40AB-9A02-4F0E9777ABC0}");
+    SetRegKeyAndValue(HKEY_CLASSES_ROOT, apoKey, L"APOInterface0", L"{FD7F2B29-24D0-4B5C-B177-592C39F9CA10}"); // IID_IAudioProcessingObject
 
+    LogApo(L"DllRegisterServer registered %s with interface FD7F2B29", szModule);
     return S_OK;
 }
 
@@ -437,6 +686,14 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
     {
         g_hModule = hModule;
         DisableThreadLibraryCalls(hModule);
+
+        WCHAR modPath[MAX_PATH] = { 0 };
+        GetModuleFileNameW(NULL, modPath, MAX_PATH);
+        LogApo(L"DLL_PROCESS_ATTACH into process: %s (PID %lu)", modPath, GetCurrentProcessId());
+    }
+    else if (ul_reason_for_call == DLL_PROCESS_DETACH)
+    {
+        LogApo(L"DLL_PROCESS_DETACH from PID %lu", GetCurrentProcessId());
     }
     return TRUE;
 }

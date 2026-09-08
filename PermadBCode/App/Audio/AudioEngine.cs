@@ -2,13 +2,44 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
+using System.IO.MemoryMappedFiles;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading;
 using NAudio.CoreAudioApi;
 using NAudio.CoreAudioApi.Interfaces;
 using PermadB.Config;
 
 namespace PermadB.Audio;
+
+[StructLayout(LayoutKind.Sequential, Pack = 8)]
+public struct PermadBApoTelemetry
+{
+    public uint Magic;                  // "PERM" (0x5045524D)
+    public uint Version;                // 2 (Phase 2 Lookahead Limiter)
+    public uint AudiodgPid;             // PID of audiodg.exe
+    public uint SampleRate;             // e.g. 48000
+    public uint ChannelCount;           // e.g. 2
+    public uint LimiterActivations;     // Total limiter activation count
+    public ulong ProcessCount;          // Total APOProcess() invocations
+    public ulong TotalFramesProcessed;  // Total frames processed
+    public float ConfiguredCeilingDbfs; // -1.0 dBFS
+    public float ConfiguredCeilingLinear;// 0.8912509f
+    public float LastPeakInLinear;      // Peak linear input [0..1+]
+    public float LastPeakOutLinear;     // Peak linear output [0..1+]
+    public float LastPeakInDbfs;        // Peak dBFS in
+    public float LastPeakOutDbfs;       // Peak dBFS out
+    public float MaxObservedInDbfs;     // Highest input dBFS observed
+    public float MaxObservedOutDbfs;    // Highest output dBFS observed
+    public float CurrentGainReductionDb;// Current gain reduction in dB
+    public float MaxGainReductionDb;    // Maximum gain reduction in dB
+    public ulong LastProcessTick;       // GetTickCount64()
+    public float TargetCeilingLinear;   // Control to APO: target linear ceiling (e.g. 0.30f for 30%)
+    public float TargetCeilingDbfs;     // Control to APO: target dBFS ceiling
+    public uint IsEnabled;              // Control to APO: 1 = active, 0 = bypass
+    public uint CommandSeq;             // Incremented when command changed
+}
 
 public class AppSessionInfo
 {
@@ -62,7 +93,48 @@ public class AudioEngine : IMMNotificationClient, IDisposable
     private MMDeviceEnumerator? _enumerator;
     private MMDevice? _activeDevice;
     private AudioEndpointVolumeNotificationDelegate? _volumeDelegate;
-    private bool _isAdjustingVolume = false;
+
+    // Real-Time APO Telemetry reader (reads C:\Users\Public\permadb_apo_telemetry.dat written by audiodg.exe)
+    private const string ApoTelemetryPath = @"C:\Users\Public\permadb_apo_telemetry.dat";
+    private FileStream? _telemetryFs;
+    private MemoryMappedFile? _telemetryMmf;
+    private MemoryMappedViewAccessor? _telemetryAcc;
+
+    private bool TryReadApoTelemetry(out PermadBApoTelemetry telemetry)
+    {
+        telemetry = default;
+        try
+        {
+            if (_telemetryAcc == null)
+            {
+                if (File.Exists(ApoTelemetryPath))
+                {
+                    _telemetryFs = new FileStream(ApoTelemetryPath, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite);
+                    _telemetryMmf = MemoryMappedFile.CreateFromFile(_telemetryFs, null, Marshal.SizeOf<PermadBApoTelemetry>(), MemoryMappedFileAccess.ReadWrite, HandleInheritability.None, false);
+                    _telemetryAcc = _telemetryMmf.CreateViewAccessor(0, Marshal.SizeOf<PermadBApoTelemetry>(), MemoryMappedFileAccess.ReadWrite);
+                }
+            }
+
+            if (_telemetryAcc != null)
+            {
+                _telemetryAcc.Read(0, out telemetry);
+                if (telemetry.Magic == 0x5045524D) // "PERM"
+                {
+                    return true;
+                }
+            }
+        }
+        catch
+        {
+            _telemetryAcc?.Dispose();
+            _telemetryAcc = null;
+            _telemetryMmf?.Dispose();
+            _telemetryMmf = null;
+            _telemetryFs?.Dispose();
+            _telemetryFs = null;
+        }
+        return false;
+    }
 
     // Audio safety state
     private float _userBaselineVolume = -1.0f;
@@ -157,27 +229,8 @@ public class AudioEngine : IMMNotificationClient, IDisposable
 
         PostToAudioThread(() =>
         {
-            if (_activeDevice != null)
-            {
-                var targetScalar = profile.SafeCeilingPercent / 100.0f;
-                _isAdjustingVolume = true;
-                try
-                {
-                    _activeDevice.AudioEndpointVolume.MasterVolumeLevelScalar = targetScalar;
-                    _userBaselineVolume = targetScalar;
-                    Console.WriteLine($"[AudioEngine] Custom ceiling applied: {percent:F0}%. Windows volume set to {percent:F0}%.");
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"[AudioEngine] Error setting custom ceiling volume: {ex.Message}");
-                }
-                finally
-                {
-                    _isAdjustingVolume = false;
-                }
-            }
-
             InternalEnforceCeiling();
+            InternalPollMeter();
         });
     }
 
@@ -214,26 +267,6 @@ public class AudioEngine : IMMNotificationClient, IDisposable
 
         PostToAudioThread(() =>
         {
-            if (_activeDevice != null)
-            {
-                var targetScalar = profile.SafeCeilingPercent / 100.0f;
-                _isAdjustingVolume = true;
-                try
-                {
-                    _activeDevice.AudioEndpointVolume.MasterVolumeLevelScalar = targetScalar;
-                    _userBaselineVolume = targetScalar;
-                    Console.WriteLine($"[AudioEngine] Preset '{preset}' applied: Ceiling set to {profile.SafeCeilingPercent:F0}% ({profile.TargetSafeDbSpl:F0} dBA). Windows volume set to {profile.SafeCeilingPercent:F0}%.");
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"[AudioEngine] Error applying preset volume: {ex.Message}");
-                }
-                finally
-                {
-                    _isAdjustingVolume = false;
-                }
-            }
-
             InternalEnforceCeiling();
             InternalPollMeter();
         });
@@ -241,62 +274,15 @@ public class AudioEngine : IMMNotificationClient, IDisposable
 
     public void SetMasterVolume(float percent)
     {
-        PostToAudioThread(() =>
-        {
-            if (_activeDevice == null) return;
-            _isAdjustingVolume = true;
-            try
-            {
-                var target = Math.Clamp(percent / 100.0f, 0.0f, 1.0f);
-                _activeDevice.AudioEndpointVolume.MasterVolumeLevelScalar = target;
-                _userBaselineVolume = target;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[AudioEngine] SetMasterVolume error: {ex.Message}");
-            }
-            finally
-            {
-                _isAdjustingVolume = false;
-            }
-        });
+        // Invariant: PermadB never alters Windows master volume.
+        // Safety limiting is enforced exclusively on PCM audio inside audiodg.exe via the APO.
+        Console.WriteLine($"[AudioEngine] SetMasterVolume({percent:F0}%) ignored: Volume immutability invariant strictly enforced.");
     }
 
     public void SetAppVolume(string processName, float volumePercent)
     {
-        PostToAudioThread(() =>
-        {
-            if (_activeDevice == null) return;
-            try
-            {
-                var targetScalar = Math.Clamp(volumePercent / 100.0f, 0.0f, 1.0f);
-                _config.Settings.AppVolumeOverrides[processName] = volumePercent;
-                _config.Save();
-
-                var sessionManager = _activeDevice.AudioSessionManager;
-                sessionManager.RefreshSessions();
-                var sessions = sessionManager.Sessions;
-                for (int i = 0; i < sessions.Count; i++)
-                {
-                    var s = sessions[i];
-                    var pid = (int)s.GetProcessID;
-                    string name = string.Empty;
-                    if (pid > 0 && _processNameCache.TryGetValue(pid, out var cachedName))
-                    {
-                        name = cachedName;
-                    }
-                    if (string.Equals(name, processName, StringComparison.OrdinalIgnoreCase))
-                    {
-                        s.SimpleAudioVolume.Volume = targetScalar;
-                        Console.WriteLine($"[AudioEngine] Set Sound Mixer volume for '{processName}' to {volumePercent:F0}%");
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[AudioEngine] Error setting app volume for {processName}: {ex.Message}");
-            }
-        });
+        // Invariant: PermadB never alters Windows Volume Mixer state or per-application volume.
+        Console.WriteLine($"[AudioEngine] SetAppVolume({processName}, {volumePercent:F0}%) ignored: Volume immutability invariant strictly enforced.");
     }
 
     private void PostToAudioThread(Action action)
@@ -377,16 +363,38 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                 var friendlyName = _activeDevice.FriendlyName;
                 var profile = _config.GetOrCreateProfile(id, friendlyName);
 
+                // Synchronize profile safe ceiling with configured active preset on startup / device connect
+                switch (_config.Settings.ActivePreset.ToLowerInvariant())
+                {
+                    case "safe":
+                        profile.SafeCeilingPercent = 65.0f;
+                        profile.TargetSafeDbSpl = 75.0f;
+                        break;
+                    case "night":
+                        profile.SafeCeilingPercent = 50.0f;
+                        profile.TargetSafeDbSpl = 68.0f;
+                        break;
+                    case "studio":
+                        profile.SafeCeilingPercent = 85.0f;
+                        profile.TargetSafeDbSpl = 82.0f;
+                        break;
+                    case "custom":
+                        profile.SafeCeilingPercent = Math.Clamp(profile.SafeCeilingPercent, 10.0f, 100.0f);
+                        profile.TargetSafeDbSpl = 50.0f + (profile.SafeCeilingPercent / 100.0f) * 38.0f;
+                        break;
+                    default:
+                        _config.Settings.ActivePreset = "safe";
+                        profile.SafeCeilingPercent = 65.0f;
+                        profile.TargetSafeDbSpl = 75.0f;
+                        break;
+                }
+
                 _volumeDelegate = new AudioEndpointVolumeNotificationDelegate(OnVolumeNotificationReceived);
                 _activeDevice.AudioEndpointVolume.OnVolumeNotification += _volumeDelegate;
 
-                Console.WriteLine($"[AudioEngine] Active Device: {friendlyName} ({profile.DeviceType})");
+                Console.WriteLine($"[AudioEngine] Active Device: {friendlyName} ({profile.DeviceType}, Preset={_config.Settings.ActivePreset}, Ceiling={profile.SafeCeilingPercent:F0}%)");
                 UpdateCachedProfile(profile);
                 InternalEnforceCeiling();
-
-                // Restore any apps (e.g. System Sounds, NVIDIA Container) or mics ducked by older builds back to 100%
-                RestoreClampedAppVolumes();
-                RestoreMicrophoneVolumes();
             }
         }
         catch (Exception ex)
@@ -426,150 +434,110 @@ public class AudioEngine : IMMNotificationClient, IDisposable
 
     private void OnVolumeNotificationReceived(AudioVolumeNotificationData data)
     {
-        if (_isAdjustingVolume || !_config.Settings.Enabled) return;
-
-        var profile = GetActiveProfile();
-        var safeCap = Math.Clamp(profile.SafeCeilingPercent, 5.0f, 100.0f) / 100.0f;
-
-        // If user or an app attempts to turn volume above the safe ceiling, clamp it
-        if (data.MasterVolume > safeCap + 0.005f)
-        {
-            PostToAudioThread(InternalEnforceCeiling);
-        }
-        else
-        {
-            _userBaselineVolume = data.MasterVolume;
-        }
+        _userBaselineVolume = data.MasterVolume;
     }
 
     private int _cachedProtectedCount = 1;
 
+    private uint _apoCommandSeq = 1;
+    private float _lastSentCeilingLinear = -1.0f;
+    private int _lastSentEnabled = -1;
+
+    public void SendCeilingToApo()
+    {
+        PostToAudioThread(InternalSendCeilingToApo);
+    }
+
+    private void InternalSendCeilingToApo()
+    {
+        try
+        {
+            var profile = GetActiveProfile();
+            float ceilingPercent = profile.SafeCeilingPercent;
+            bool isEnabled = _config.Settings.Enabled;
+
+            // Convert user ceiling percentage to acoustic digital ceiling using human perceptual curve.
+            // Human hearing is logarithmic: a 30% volume setting must attenuate significantly (~-27 dBFS)
+            // so that audio peaks are genuinely quieted to comfortable listening levels.
+            float norm = Math.Clamp(ceilingPercent / 100.0f, 0.05f, 1.0f);
+            float linear = 0.8912509f * (float)Math.Pow(norm, 2.5);
+            linear = Math.Clamp(linear, 0.001f, 0.8912509f);
+            float dbfs = 20.0f * (float)Math.Log10(linear);
+            int enabledInt = isEnabled ? 1 : 0;
+
+            if (_telemetryAcc == null)
+            {
+                try
+                {
+                    _telemetryFs = new FileStream(ApoTelemetryPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite);
+                    if (_telemetryFs.Length < Marshal.SizeOf<PermadBApoTelemetry>())
+                    {
+                        _telemetryFs.SetLength(Marshal.SizeOf<PermadBApoTelemetry>());
+                    }
+                    _telemetryMmf = MemoryMappedFile.CreateFromFile(_telemetryFs, null, Marshal.SizeOf<PermadBApoTelemetry>(), MemoryMappedFileAccess.ReadWrite, HandleInheritability.None, false);
+                    _telemetryAcc = _telemetryMmf.CreateViewAccessor(0, Marshal.SizeOf<PermadBApoTelemetry>(), MemoryMappedFileAccess.ReadWrite);
+                }
+                catch { }
+            }
+
+            if (_telemetryAcc != null)
+            {
+                // Verify whether the live APO is in sync with our desired ceiling
+                _telemetryAcc.Read(0, out PermadBApoTelemetry telem);
+                bool apoOutOfSync = (telem.Magic != 0x5045524D) ||
+                                    (Math.Abs(telem.ConfiguredCeilingLinear - linear) > 0.005f) ||
+                                    (telem.IsEnabled != (uint)enabledInt);
+
+                if (apoOutOfSync || Math.Abs(linear - _lastSentCeilingLinear) > 0.001f || enabledInt != _lastSentEnabled)
+                {
+                    _apoCommandSeq++;
+                    int offsetMagic = (int)Marshal.OffsetOf<PermadBApoTelemetry>(nameof(PermadBApoTelemetry.Magic));
+                    int offsetVersion = (int)Marshal.OffsetOf<PermadBApoTelemetry>(nameof(PermadBApoTelemetry.Version));
+                    int offsetLinear = (int)Marshal.OffsetOf<PermadBApoTelemetry>(nameof(PermadBApoTelemetry.TargetCeilingLinear));
+                    int offsetDbfs = (int)Marshal.OffsetOf<PermadBApoTelemetry>(nameof(PermadBApoTelemetry.TargetCeilingDbfs));
+                    int offsetEnabled = (int)Marshal.OffsetOf<PermadBApoTelemetry>(nameof(PermadBApoTelemetry.IsEnabled));
+                    int offsetSeq = (int)Marshal.OffsetOf<PermadBApoTelemetry>(nameof(PermadBApoTelemetry.CommandSeq));
+
+                    _telemetryAcc.Write(offsetMagic, (uint)0x5045524D); // "PERM"
+                    _telemetryAcc.Write(offsetVersion, (uint)2);
+                    _telemetryAcc.Write(offsetLinear, linear);
+                    _telemetryAcc.Write(offsetDbfs, dbfs);
+                    _telemetryAcc.Write(offsetEnabled, (uint)enabledInt);
+                    _telemetryAcc.Write(offsetSeq, _apoCommandSeq);
+
+                    _lastSentCeilingLinear = linear;
+                    _lastSentEnabled = enabledInt;
+
+                    Console.WriteLine($"[AudioEngine] Dynamic ceiling sent to APO: {ceilingPercent:F0}% ({linear:F4} linear, {dbfs:F1} dBFS, enabled={isEnabled}, seq={_apoCommandSeq})");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[AudioEngine] Error sending ceiling to APO: {ex.Message}");
+        }
+    }
+
     private void InternalEnforceCeiling()
     {
-        if (!_config.Settings.Enabled) return;
+        // Limiting is executed directly on PCM inside audiodg.exe via PermadBApo.dll.
+        // Windows volume sliders are NEVER altered.
+        InternalSendCeilingToApo();
 
         int count = 0;
-        if (_activeDevice != null)
-        {
-            EnforceDeviceCeiling(_activeDevice);
-            count++;
-        }
+        if (_activeDevice != null) count++;
 
         if (_config.Settings.ApplyToAllDevices && _enumerator != null)
         {
             try
             {
                 var endpoints = _enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active);
-                foreach (var ep in endpoints)
-                {
-                    if (_activeDevice != null && ep.ID == _activeDevice.ID) continue;
-                    EnforceDeviceCeiling(ep);
-                    count++;
-                }
+                count = endpoints.Count;
             }
             catch { }
         }
 
         _cachedProtectedCount = Math.Max(1, count);
-    }
-
-    private void EnforceDeviceCeiling(MMDevice device)
-    {
-        try
-        {
-            var profile = GetActiveProfile();
-            var safeCapPercent = profile.SafeCeilingPercent;
-            var safeCap = Math.Clamp(safeCapPercent, 5.0f, 100.0f) / 100.0f;
-            var currentVol = device.AudioEndpointVolume.MasterVolumeLevelScalar;
-
-            // Only clamp if volume strictly exceeds the safe ceiling.
-            // Lower volumes are quieter and safer, so they are always allowed freely!
-            if (currentVol > safeCap + 0.005f)
-            {
-                _isAdjustingVolume = true;
-                try
-                {
-                    device.AudioEndpointVolume.MasterVolumeLevelScalar = safeCap;
-                    _userBaselineVolume = safeCap;
-                    Console.WriteLine($"[AudioEngine] Safe ceiling enforced on '{device.FriendlyName}': clamped from {currentVol * 100:F0}% down to {safeCap * 100:F0}%.");
-                }
-                finally
-                {
-                    _isAdjustingVolume = false;
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[AudioEngine] Ceiling enforcement error on {device.FriendlyName}: {ex.Message}");
-        }
-    }
-
-    private void RestoreClampedAppVolumes()
-    {
-        if (_enumerator == null) return;
-        try
-        {
-            var endpoints = _enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active);
-            foreach (var ep in endpoints)
-            {
-                try
-                {
-                    var sessionManager = ep.AudioSessionManager;
-                    sessionManager.RefreshSessions();
-                    var sessions = sessionManager.Sessions;
-                    for (int i = 0; i < sessions.Count; i++)
-                    {
-                        var s = sessions[i];
-                        var pid = (int)s.GetProcessID;
-                        string procName = "System Sounds";
-                        if (pid > 0 && _processNameCache.TryGetValue(pid, out var cachedName))
-                        {
-                            procName = cachedName;
-                        }
-                        else if (pid > 0)
-                        {
-                            try { procName = Process.GetProcessById(pid).ProcessName; } catch { }
-                        }
-
-                        // If System Sounds, NVIDIA Container, or any app was previously ducked below 100%, restore it to 100%
-                        if (s.SimpleAudioVolume.Volume < 0.99f)
-                        {
-                            s.SimpleAudioVolume.Volume = 1.0f;
-                            Console.WriteLine($"[AudioEngine] Restored '{procName}' on '{ep.FriendlyName}' in Windows Sound Mixer back to 100%.");
-                        }
-                    }
-                }
-                catch { }
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[AudioEngine] RestoreClampedAppVolumes error: {ex.Message}");
-        }
-    }
-
-    private void RestoreMicrophoneVolumes()
-    {
-        if (_enumerator == null) return;
-        try
-        {
-            var captureEndpoints = _enumerator.EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active);
-            foreach (var cap in captureEndpoints)
-            {
-                try
-                {
-                    // If mic was capped to ~80% (0.78f - 0.82f) by previous version, restore it to 100% (1.0f)
-                    if (cap.AudioEndpointVolume.MasterVolumeLevelScalar >= 0.78f && cap.AudioEndpointVolume.MasterVolumeLevelScalar <= 0.82f)
-                    {
-                        cap.AudioEndpointVolume.MasterVolumeLevelScalar = 1.0f;
-                        Console.WriteLine($"[AudioEngine] Restored microphone '{cap.FriendlyName}' volume back to 100%.");
-                    }
-                }
-                catch { }
-            }
-        }
-        catch { }
     }
 
     private void InternalPollMeter()
@@ -580,19 +548,38 @@ public class AudioEngine : IMMNotificationClient, IDisposable
         {
             var meter = _activeDevice.AudioMeterInformation;
             var endpointVol = _activeDevice.AudioEndpointVolume;
-            var peak = meter.MasterPeakValue;
+            var meterPeak = meter.MasterPeakValue;
             var volScalar = endpointVol.MasterVolumeLevelScalar;
             var profile = GetActiveProfile();
+            InternalSendCeilingToApo();
 
-            // Watchdog protection: If volume was pushed above safe ceiling (e.g. by external app/shortcut), clamp it back
-            if (_config.Settings.Enabled && !_isAdjustingVolume)
+            // Check real-time APO telemetry from audiodg.exe
+            bool hasApoTelemetry = TryReadApoTelemetry(out var telem);
+            bool isApoRecentlyActive = hasApoTelemetry && ((ulong)Environment.TickCount64 - telem.LastProcessTick < 1500);
+
+            float peak;
+            float peakDbfs;
+            bool isClamping;
+            long spikesClamped;
+
+            if (isApoRecentlyActive)
             {
-                var safeCap = Math.Clamp(profile.SafeCeilingPercent, 5.0f, 100.0f) / 100.0f;
-                if (volScalar > safeCap + 0.005f)
+                peak = telem.LastPeakOutLinear;
+                peakDbfs = telem.LastPeakOutDbfs;
+                isClamping = telem.CurrentGainReductionDb > 0.05f;
+                spikesClamped = (long)telem.LimiterActivations;
+
+                if (isClamping)
                 {
-                    InternalEnforceCeiling();
-                    volScalar = endpointVol.MasterVolumeLevelScalar;
+                    OnPeakClamped?.Invoke(telem.LastPeakInDbfs);
                 }
+            }
+            else
+            {
+                peak = meterPeak;
+                peakDbfs = peak > 0.00001f ? 20.0f * (float)Math.Log10(peak) : -96.0f;
+                isClamping = false;
+                spikesClamped = hasApoTelemetry ? (long)telem.LimiterActivations : 0;
             }
 
             // Hardware master volume attenuation in dB
@@ -605,8 +592,6 @@ public class AudioEngine : IMMNotificationClient, IDisposable
             {
                 masterDbAtten = volScalar > 0.001f ? 20.0f * (float)Math.Log10(volScalar) : -60.0f;
             }
-
-            var peakDbfs = peak > 0.00001f ? 20.0f * (float)Math.Log10(peak) : -96.0f;
 
             // Physical acoustic peak SPL at user's ears (EstimatedMaxDbSpl is physical dBA at 0 dBFS & 0 dB attenuation)
             var estimatedPeakSpl = profile.EstimatedMaxDbSpl + peakDbfs + masterDbAtten;
@@ -675,26 +660,6 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                         var appEstContinuousSpl = Math.Clamp(appEstPeakSpl - crestFactor, 25.0f, 105.0f);
 
                         bool isAppClamped = false;
-                        if (_config.Settings.AppVolumeOverrides.TryGetValue(procName, out var userCapPercent))
-                        {
-                            var userCapScalar = Math.Clamp(userCapPercent / 100.0f, 0.0f, 1.0f);
-                            if (appVol > userCapScalar + 0.02f)
-                            {
-                                s.SimpleAudioVolume.Volume = userCapScalar;
-                                appVol = userCapScalar;
-                                isAppClamped = true;
-                            }
-                        }
-                        else if (string.Equals(procName, "System Sounds", StringComparison.OrdinalIgnoreCase) ||
-                                 procName.Contains("nvcontainer", StringComparison.OrdinalIgnoreCase) ||
-                                 procName.Contains("nvidia", StringComparison.OrdinalIgnoreCase))
-                        {
-                            if (appVol < 0.99f)
-                            {
-                                s.SimpleAudioVolume.Volume = 1.0f;
-                                appVol = 1.0f;
-                            }
-                        }
 
                         appSessionsList.Add(new AppSessionInfo
                         {
@@ -722,8 +687,8 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                 EstimatedDbSpl = (float)Math.Round(estimatedContinuousSpl, 1),
                 CurrentVolumePercent = (float)Math.Round(volScalar * 100.0f, 1),
                 SafeCeilingPercent = profile.SafeCeilingPercent,
-                IsClamping = false,
-                SpikesClampedTotal = 0,
+                IsClamping = isClamping,
+                SpikesClampedTotal = spikesClamped,
                 ChannelPeaks = channelPeaks,
                 ActiveDeviceId = profile.DeviceId,
                 ActiveDeviceName = profile.DeviceName,
@@ -779,6 +744,13 @@ public class AudioEngine : IMMNotificationClient, IDisposable
     {
         try
         {
+            _telemetryAcc?.Dispose();
+            _telemetryAcc = null;
+            _telemetryMmf?.Dispose();
+            _telemetryMmf = null;
+            _telemetryFs?.Dispose();
+            _telemetryFs = null;
+
             if (_enumerator != null)
             {
                 _enumerator.UnregisterEndpointNotificationCallback(this);

@@ -54,13 +54,30 @@ foreach ($dev in $devices) {
             $modified = $true
         }
 
-        if ($fx.PSObject.Properties[$pkeyCompositeEfx] -and $fx.$pkeyCompositeEfx -eq $clsid) {
+        if ($fx.PSObject.Properties[$pkeyCompositeEfx] -and ($fx.$pkeyCompositeEfx -contains $clsid -or $fx.$pkeyCompositeEfx -eq $clsid)) {
             if ($fx.PSObject.Properties["PermadB_Backup_CompositeEFX"]) {
-                Set-ItemProperty -Path $fxPath -Name $pkeyCompositeEfx -Value $fx.PermadB_Backup_CompositeEFX -Type String
+                Set-ItemProperty -Path $fxPath -Name $pkeyCompositeEfx -Value $fx.PermadB_Backup_CompositeEFX -Type MultiString
                 Remove-ItemProperty -Path $fxPath -Name "PermadB_Backup_CompositeEFX" -ErrorAction SilentlyContinue
             } else {
-                Remove-ItemProperty -Path $fxPath -Name $pkeyCompositeEfx -ErrorAction SilentlyContinue
+                $rem = [string[]]($fx.$pkeyCompositeEfx | Where-Object { $_ -ne $clsid })
+                if ($rem -and $rem.Length -gt 0) {
+                    Set-ItemProperty -Path $fxPath -Name $pkeyCompositeEfx -Value $rem -Type MultiString
+                } else {
+                    Remove-ItemProperty -Path $fxPath -Name $pkeyCompositeEfx -ErrorAction SilentlyContinue
+                }
             }
+            Remove-ItemProperty -Path $fxPath -Name "PermadB_Created_CompositeEFX" -ErrorAction SilentlyContinue
+            $modified = $true
+        }
+
+        $pkeyEfxModes = "{d3993a3f-99c2-4402-b5ec-a92a0367664b},7"
+        if ($fx.PSObject.Properties["PermadB_Backup_EFXModes"]) {
+            Set-ItemProperty -Path $fxPath -Name $pkeyEfxModes -Value $fx.PermadB_Backup_EFXModes -Type MultiString
+            Remove-ItemProperty -Path $fxPath -Name "PermadB_Backup_EFXModes" -ErrorAction SilentlyContinue
+            $modified = $true
+        } elseif ($fx.PSObject.Properties["PermadB_Created_EFXModes"]) {
+            Remove-ItemProperty -Path $fxPath -Name $pkeyEfxModes -ErrorAction SilentlyContinue
+            Remove-ItemProperty -Path $fxPath -Name "PermadB_Created_EFXModes" -ErrorAction SilentlyContinue
             $modified = $true
         }
 

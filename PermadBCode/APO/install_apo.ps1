@@ -36,6 +36,11 @@ Write-Host "===================================================" -ForegroundColo
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $dllPath = Join-Path $scriptDir "PermadBApo.dll"
 
+$oldDllPath = Join-Path $scriptDir "PermadBApo.dll.old"
+if (Test-Path $oldDllPath) {
+    Remove-Item $oldDllPath -Force -ErrorAction SilentlyContinue
+}
+
 if (-not (Test-Path $dllPath)) {
     Write-Error "[ERROR] PermadBApo.dll not found at '$dllPath'. Run build_apo.bat first!"
 }
@@ -52,7 +57,28 @@ $regSvr = Start-Process regsvr32.exe -ArgumentList "/s `"$dllPath`"" -PassThru -
 if ($regSvr.ExitCode -ne 0) {
     Write-Error "[ERROR] regsvr32 failed with exit code $($regSvr.ExitCode)"
 }
-Write-Host "      COM registration complete." -ForegroundColor Green
+
+# Ensure AudioProcessingObjects registration has correct interface GUIDs
+$apoRegPath = "SOFTWARE\Classes\AudioEngine\AudioProcessingObjects\{968ff234-1895-49f1-8b97-9d9075eb25b6}"
+$apoKey = [Microsoft.Win32.Registry]::LocalMachine.CreateSubKey($apoRegPath, $true)
+try {
+    $apoKey.SetValue("FriendlyName", "PermadB Limiter APO", [Microsoft.Win32.RegistryValueKind]::String)
+    $apoKey.SetValue("Copyright", "PermadB", [Microsoft.Win32.RegistryValueKind]::String)
+    $apoKey.SetValue("MajorVersion", 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+    $apoKey.SetValue("MinorVersion", 0, [Microsoft.Win32.RegistryValueKind]::DWord)
+    $apoKey.SetValue("Flags", 15, [Microsoft.Win32.RegistryValueKind]::DWord)
+    $apoKey.SetValue("MinInputConnections", 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+    $apoKey.SetValue("MaxInputConnections", 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+    $apoKey.SetValue("MinOutputConnections", 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+    $apoKey.SetValue("MaxOutputConnections", 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+    $apoKey.SetValue("MaxInstances", [int]0xFFFFFFFF, [Microsoft.Win32.RegistryValueKind]::DWord)
+    $apoKey.SetValue("NumAPOInterfaces", 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+    $apoKey.SetValue("APOInterface0", "{FD7F2B29-24D0-4B5C-B177-592C39F9CA10}", [Microsoft.Win32.RegistryValueKind]::String) # IID_IAudioProcessingObject
+    try { $apoKey.DeleteValue("APOInterface1") } catch { }
+} finally {
+    $apoKey.Close()
+}
+Write-Host "      COM & AudioEngine registration complete." -ForegroundColor Green
 
 # 4. Determine Target Audio Endpoint
 Write-Host "[3/5] Resolving playback endpoint..." -ForegroundColor Yellow
@@ -101,28 +127,63 @@ if (-not (Test-Path $fxPath)) {
 $clsid = "{968ff234-1895-49f1-8b97-9d9075eb25b6}"
 $pkeyEfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},7"
 $pkeyCompositeEfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},15"
+$pkeySfxModes = "{d3993a3f-99c2-4402-b5ec-a92a0367664b},5"
+$pkeyMfxModes = "{d3993a3f-99c2-4402-b5ec-a92a0367664b},6"
+$pkeyEfxModes = "{d3993a3f-99c2-4402-b5ec-a92a0367664b},7"
 
-# Backup original values if present and not already backed up
-$existingFx = Get-ItemProperty -Path $fxPath -ErrorAction SilentlyContinue
-if ($existingFx.PSObject.Properties[$pkeyEfx] -and -not $existingFx.PSObject.Properties["PermadB_Backup_EFX"]) {
-    Set-ItemProperty -Path $fxPath -Name "PermadB_Backup_EFX" -Value $existingFx.$pkeyEfx -Type String
-}
-if ($existingFx.PSObject.Properties[$pkeyCompositeEfx] -and -not $existingFx.PSObject.Properties["PermadB_Backup_CompositeEFX"]) {
-    Set-ItemProperty -Path $fxPath -Name "PermadB_Backup_CompositeEFX" -Value $existingFx.$pkeyCompositeEfx -Type String
-}
+# Set Endpoint Effect CLSID via direct Registry API with SetValue rights
+$regSubPath = "SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render\$TargetDeviceId\FxProperties"
+$key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($regSubPath, [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree, [System.Security.AccessControl.RegistryRights]::SetValue -bor [System.Security.AccessControl.RegistryRights]::QueryValues)
+try {
+    # 1. Preserve and configure PKEY_FX_EndpointEffectClsid (,7)
+    $existingEfx = $key.GetValue($pkeyEfx)
+    if ($existingEfx -and $existingEfx -ne $clsid) {
+        if (-not $key.GetValue("PermadB_Backup_EFX")) {
+            $key.SetValue("PermadB_Backup_EFX", $existingEfx, [Microsoft.Win32.RegistryValueKind]::String)
+        }
+    }
+    $key.SetValue($pkeyEfx, $clsid, [Microsoft.Win32.RegistryValueKind]::String)
 
-# Set Endpoint Effect CLSID
-Set-ItemProperty -Path $fxPath -Name $pkeyEfx -Value $clsid -Type String
-Set-ItemProperty -Path $fxPath -Name $pkeyCompositeEfx -Value $clsid -Type String
-Set-ItemProperty -Path $fxPath -Name "PermadB_Installed_DeviceId" -Value $TargetDeviceId -Type String
+    # 2. Preserve and configure PKEY_CompositeFX_EndpointEffectClsid (,15)
+    $existingComp = $key.GetValue($pkeyCompositeEfx)
+    if ($existingComp -and $existingComp.Length -gt 0) {
+        if (-not ($existingComp -contains $clsid)) {
+            if (-not $key.GetValue("PermadB_Backup_CompositeEFX")) {
+                $key.SetValue("PermadB_Backup_CompositeEFX", [string[]]$existingComp, [Microsoft.Win32.RegistryValueKind]::MultiString)
+            }
+            $newComp = [string[]]($existingComp + @($clsid))
+            $key.SetValue($pkeyCompositeEfx, $newComp, [Microsoft.Win32.RegistryValueKind]::MultiString)
+        }
+    } else {
+        $key.SetValue("PermadB_Created_CompositeEFX", 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+        $key.SetValue($pkeyCompositeEfx, [string[]]@($clsid), [Microsoft.Win32.RegistryValueKind]::MultiString)
+    }
+
+    # 3. Preserve and configure PKEY_EFX_ProcessingModes_Supported_For_Streaming (,7)
+    $existingEfxModes = $key.GetValue($pkeyEfxModes)
+    $sfxModes = $key.GetValue($pkeySfxModes)
+    $targetModes = if ($sfxModes -and $sfxModes.Length -gt 0) { [string[]]$sfxModes } else { [string[]]@("{C18E2F7E-933D-4965-B7D1-1EEF228D2AF3}") }
+
+    if ($existingEfxModes -and $existingEfxModes.Length -gt 0) {
+        if (-not $key.GetValue("PermadB_Backup_EFXModes")) {
+            $key.SetValue("PermadB_Backup_EFXModes", [string[]]$existingEfxModes, [Microsoft.Win32.RegistryValueKind]::MultiString)
+        }
+        $mergedModes = [string[]]($existingEfxModes + $targetModes | Select-Object -Unique)
+        $key.SetValue($pkeyEfxModes, $mergedModes, [Microsoft.Win32.RegistryValueKind]::MultiString)
+    } else {
+        $key.SetValue("PermadB_Created_EFXModes", 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+        $key.SetValue($pkeyEfxModes, $targetModes, [Microsoft.Win32.RegistryValueKind]::MultiString)
+    }
+
+    $key.SetValue("PermadB_Installed_DeviceId", $TargetDeviceId, [Microsoft.Win32.RegistryValueKind]::String)
+} finally {
+    $key.Close()
+}
 
 Write-Host "      Endpoint Effects configured successfully." -ForegroundColor Green
 
-# 6. Restart Windows Audio Service
-Write-Host "[5/5] Restarting Windows Audio Service (audiosrv)..." -ForegroundColor Yellow
-Restart-Service -Name "audiosrv" -Force
-Start-Sleep -Seconds 2
-Write-Host "      Windows Audio Service restarted." -ForegroundColor Green
+# 6. Configuration Complete
+Write-Host "[5/5] Endpoint & APO Registry configuration complete." -ForegroundColor Green
 
 Write-Host ""
 Write-Host "===================================================" -ForegroundColor Green

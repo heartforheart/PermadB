@@ -13,20 +13,29 @@ namespace PermadBApoTest;
 [StructLayout(LayoutKind.Sequential, Pack = 8)]
 public struct PermadBApoTelemetry
 {
-    public uint Magic;                 // "PERM" (0x5045524D)
-    public uint Version;               // 1
-    public uint AudiodgPid;            // PID of audiodg.exe
-    public uint SampleRate;            // e.g. 48000
-    public uint ChannelCount;          // e.g. 2
-    public ulong ProcessCount;         // Total APOProcess() invocations
-    public ulong TotalFramesProcessed; // Total frames processed
-    public float FixedGainDb;          // -12.0 dB
-    public float FixedGainLinear;      // 0.25118864f
-    public float LastPeakInLinear;     // Peak linear input
-    public float LastPeakOutLinear;    // Peak linear output
-    public float LastPeakInDbfs;       // Peak dBFS in
-    public float LastPeakOutDbfs;      // Peak dBFS out
-    public ulong LastProcessTick;      // GetTickCount64()
+    public uint Magic;                  // "PERM" (0x5045524D)
+    public uint Version;                // 2 (Phase 2 Lookahead Limiter)
+    public uint AudiodgPid;             // PID of audiodg.exe
+    public uint SampleRate;             // e.g. 48000
+    public uint ChannelCount;           // e.g. 2
+    public uint LimiterActivations;     // Total limiter activation count
+    public ulong ProcessCount;          // Total APOProcess() invocations
+    public ulong TotalFramesProcessed;  // Total frames processed
+    public float ConfiguredCeilingDbfs; // -1.0 dBFS
+    public float ConfiguredCeilingLinear;// 0.8912509f
+    public float LastPeakInLinear;      // Peak linear input [0..1+]
+    public float LastPeakOutLinear;     // Peak linear output [0..1+]
+    public float LastPeakInDbfs;        // Peak dBFS in
+    public float LastPeakOutDbfs;       // Peak dBFS out
+    public float MaxObservedInDbfs;     // Highest input dBFS observed
+    public float MaxObservedOutDbfs;    // Highest output dBFS observed
+    public float CurrentGainReductionDb;// Current gain reduction in dB
+    public float MaxGainReductionDb;    // Maximum gain reduction in dB
+    public ulong LastProcessTick;       // GetTickCount64()
+    public float TargetCeilingLinear;   // Control to APO: target linear ceiling (e.g. 0.30f for 30%)
+    public float TargetCeilingDbfs;     // Control to APO: target dBFS ceiling
+    public uint IsEnabled;              // Control to APO: 1 = active, 0 = bypass
+    public uint CommandSeq;             // Incremented when command changed
 }
 
 public class SineWaveProvider : WaveStream
@@ -87,6 +96,32 @@ class Program
     private const string ClsidStr = "{968ff234-1895-49f1-8b97-9d9075eb25b6}";
     private const string ShmemName = "Global\\PermadB_APO_Telemetry";
 
+    private static (MemoryMappedFile?, MemoryMappedViewAccessor?) TryOpenTelemetry()
+    {
+        string telemFilePath = @"C:\Users\Public\permadb_apo_telemetry.dat";
+        if (File.Exists(telemFilePath))
+        {
+            try
+            {
+                var fs = new FileStream(telemFilePath, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite);
+                var mmf = MemoryMappedFile.CreateFromFile(fs, null, Marshal.SizeOf<PermadBApoTelemetry>(), MemoryMappedFileAccess.ReadWrite, HandleInheritability.None, false);
+                var acc = mmf.CreateViewAccessor(0, Marshal.SizeOf<PermadBApoTelemetry>(), MemoryMappedFileAccess.ReadWrite);
+                return (mmf, acc);
+            }
+            catch { }
+        }
+
+        try
+        {
+            var mmf = MemoryMappedFile.OpenExisting(ShmemName, MemoryMappedFileRights.Read);
+            var acc = mmf.CreateViewAccessor(0, Marshal.SizeOf<PermadBApoTelemetry>(), MemoryMappedFileAccess.Read);
+            return (mmf, acc);
+        }
+        catch { }
+
+        return (null, null);
+    }
+
     static void Main(string[] args)
     {
         Console.OutputEncoding = System.Text.Encoding.UTF8;
@@ -142,8 +177,43 @@ class Program
                 allPassed = false;
             }
         }
-
         // -----------------------------------------------------------
+        // Step 2b: Test Instantiation via CoCreateInstance
+        // -----------------------------------------------------------
+        Console.Write("[CHECK 2b] COM Object Instantiation via CoCreateInstance: ");
+        try
+        {
+            Type? apoType = Type.GetTypeFromCLSID(new Guid(ClsidStr));
+            if (apoType != null)
+            {
+                object? instance = Activator.CreateInstance(apoType);
+                if (instance != null)
+                {
+                    Console.ForegroundColor = ConsoleColor.Green;
+                    Console.WriteLine($"PASS (Created {instance.GetType().FullName})");
+                    Console.ResetColor();
+                    Marshal.ReleaseComObject(instance);
+                }
+                else
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("FAIL (Activator returned null)");
+                    Console.ResetColor();
+                }
+            }
+            else
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("FAIL (GetTypeFromCLSID returned null)");
+                Console.ResetColor();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"FAIL ({ex.GetType().Name}: {ex.Message})");
+            Console.ResetColor();
+        }
         // Step 3: Check Endpoint Association
         // -----------------------------------------------------------
         Console.Write("[CHECK 3] Endpoint Association in FxProperties: ");
@@ -160,20 +230,30 @@ class Program
 
         string fxRegPath = $@"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render\{deviceGuid}\FxProperties";
         string? associatedClsid = null;
+        bool hasEfxModes = false;
         using (var fxKey = Registry.LocalMachine.OpenSubKey(fxRegPath))
         {
             if (fxKey != null)
             {
                 var efx = fxKey.GetValue("{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},7")?.ToString();
-                var compositeEfx = fxKey.GetValue("{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},15")?.ToString();
+                var compositeRaw = fxKey.GetValue("{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},15");
+                string? compositeEfx = compositeRaw switch
+                {
+                    string s => s,
+                    string[] arr => arr.Length > 0 ? arr[0] : null,
+                    _ => null
+                };
                 associatedClsid = efx ?? compositeEfx;
+
+                var efxModesRaw = fxKey.GetValue("{d3993a3f-99c2-4402-b5ec-a92a0367664b},7");
+                hasEfxModes = efxModesRaw != null;
             }
         }
 
         if (string.Equals(associatedClsid, ClsidStr, StringComparison.OrdinalIgnoreCase))
         {
             Console.ForegroundColor = ConsoleColor.Green;
-            Console.WriteLine($"PASS ({defaultDevice.FriendlyName})");
+            Console.WriteLine($"PASS ({defaultDevice.FriendlyName}, ModeSupport: {(hasEfxModes ? "YES" : "NO")})");
             Console.ResetColor();
         }
         else
@@ -182,6 +262,7 @@ class Program
             Console.WriteLine($"WARNING (Current: '{associatedClsid ?? "none"}', Target: '{ClsidStr}')");
             Console.ResetColor();
             Console.WriteLine("          The APO is not associated with this default device yet.");
+            allPassed = false;
         }
 
         // -----------------------------------------------------------
@@ -191,18 +272,17 @@ class Program
         Console.WriteLine("[CHECK 4] Monitoring audiodg.exe APO Telemetry...");
         MemoryMappedFile? mmf = null;
         MemoryMappedViewAccessor? accessor = null;
-        try
+        (mmf, accessor) = TryOpenTelemetry();
+        if (accessor != null)
         {
-            mmf = MemoryMappedFile.OpenExisting(ShmemName, MemoryMappedFileRights.Read);
-            accessor = mmf.CreateViewAccessor(0, Marshal.SizeOf<PermadBApoTelemetry>(), MemoryMappedFileAccess.Read);
             Console.ForegroundColor = ConsoleColor.Green;
-            Console.WriteLine("          Successfully connected to Global\\PermadB_APO_Telemetry!");
+            Console.WriteLine("          Successfully connected to APO Telemetry!");
             Console.ResetColor();
         }
-        catch
+        else
         {
             Console.ForegroundColor = ConsoleColor.Yellow;
-            Console.WriteLine("          Shared memory not yet active (audiodg.exe has not rendered audio with the APO yet).");
+            Console.WriteLine("          Telemetry not yet active (waiting for audiodg.exe to render audio).");
             Console.ResetColor();
         }
 
@@ -238,18 +318,13 @@ class Program
 
                 if (accessor == null)
                 {
-                    try
-                    {
-                        mmf = MemoryMappedFile.OpenExisting(ShmemName, MemoryMappedFileRights.Read);
-                        accessor = mmf.CreateViewAccessor(0, Marshal.SizeOf<PermadBApoTelemetry>(), MemoryMappedFileAccess.Read);
-                    }
-                    catch { }
+                    (mmf, accessor) = TryOpenTelemetry();
                 }
 
                 if (accessor != null)
                 {
                     accessor.Read(0, out PermadBApoTelemetry t);
-                    Console.WriteLine($"          [t={i * 200}ms] In: {t.LastPeakInDbfs:F1} dBFS | Out: {t.LastPeakOutDbfs:F1} dBFS | Δ: {t.LastPeakOutDbfs - t.LastPeakInDbfs:F1} dB | APO Calls: {t.ProcessCount} | Vol: {volumeDuring * 100.0f:F1}%");
+                    Console.WriteLine($"          [t={i * 200}ms] In: {t.LastPeakInDbfs:F1} dBFS | Out: {t.LastPeakOutDbfs:F1} dBFS | MaxOut: {t.MaxObservedOutDbfs:F1} dBFS | MaxGR: {t.MaxGainReductionDb:F1} dB | Act: {t.LimiterActivations} | Vol: {volumeDuring * 100.0f:F1}%");
                 }
                 else
                 {
@@ -272,7 +347,7 @@ class Program
         // -----------------------------------------------------------
         Console.WriteLine();
         Console.WriteLine("==========================================================");
-        Console.WriteLine("                 PHASE 1 VERIFICATION RESULTS");
+        Console.WriteLine("                 PHASE 2 VERIFICATION RESULTS");
         Console.WriteLine("==========================================================");
 
         bool volumeUnchanged = Math.Abs(volumeBefore - volumeAfter) < 0.001f;
@@ -295,7 +370,6 @@ class Program
         {
             accessor.Read(0, out PermadBApoTelemetry finalTelem);
             bool callsIncremented = finalTelem.ProcessCount > initialCalls;
-            bool attenuationCorrect = Math.Abs(finalTelem.FixedGainDb - (-12.0f)) < 0.1f;
 
             Console.Write("2. APOProcess() Active Execution:    ");
             if (callsIncremented)
@@ -312,30 +386,74 @@ class Program
                 allPassed = false;
             }
 
-            Console.Write("3. Fixed Sample Attenuation (-12dB): ");
-            float measuredDiff = finalTelem.LastPeakOutDbfs - finalTelem.LastPeakInDbfs;
-            if (Math.Abs(measuredDiff - (-12.0f)) < 1.0f)
+            Console.Write("3. Brickwall Ceiling Enforcement:   ");
+            // Ceiling is -1.0 dBFS. Output peak must not exceed ceiling (+ 0.05 dB epsilon)
+            bool ceilingRespected = finalTelem.MaxObservedOutDbfs <= (finalTelem.ConfiguredCeilingDbfs + 0.05f);
+            bool limiterEngaged = finalTelem.LimiterActivations > 0;
+
+            if (ceilingRespected && limiterEngaged)
             {
                 Console.ForegroundColor = ConsoleColor.Green;
-                Console.WriteLine($"PASS (In: {finalTelem.LastPeakInDbfs:F1} dBFS -> Out: {finalTelem.LastPeakOutDbfs:F1} dBFS, diff = {measuredDiff:F1} dB)");
+                Console.WriteLine($"PASS (Peak: {finalTelem.MaxObservedOutDbfs:F2} dBFS <= Ceiling {finalTelem.ConfiguredCeilingDbfs:F1} dBFS, Max GR: {finalTelem.MaxGainReductionDb:F2} dB)");
                 Console.ResetColor();
             }
             else
             {
-                Console.ForegroundColor = ConsoleColor.Yellow;
-                Console.WriteLine($"MEASURED (In: {finalTelem.LastPeakInDbfs:F1} dBFS -> Out: {finalTelem.LastPeakOutDbfs:F1} dBFS, diff = {measuredDiff:F1} dB)");
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"FAIL (Peak: {finalTelem.MaxObservedOutDbfs:F2} dBFS, Ceiling: {finalTelem.ConfiguredCeilingDbfs:F1} dBFS, Activations: {finalTelem.LimiterActivations})");
                 Console.ResetColor();
+                allPassed = false;
             }
+
+            Console.WriteLine();
+            Console.WriteLine("--- Telemetry Snapshot Details ---");
+            Console.WriteLine($"audiodg PID:            {finalTelem.AudiodgPid}");
+            Console.WriteLine($"Sample Rate:            {finalTelem.SampleRate} Hz");
+            Console.WriteLine($"Channel Count:          {finalTelem.ChannelCount}");
+            Console.WriteLine($"Configured Ceiling:     {finalTelem.ConfiguredCeilingDbfs:F2} dBFS ({finalTelem.ConfiguredCeilingLinear:F4} linear)");
+            Console.WriteLine($"Input Peak:             {finalTelem.LastPeakInDbfs:F2} dBFS ({finalTelem.LastPeakInLinear:F4} linear)");
+            Console.WriteLine($"Output Peak:            {finalTelem.LastPeakOutDbfs:F2} dBFS ({finalTelem.LastPeakOutLinear:F4} linear)");
+            Console.WriteLine($"Maximum Observed Out:   {finalTelem.MaxObservedOutDbfs:F2} dBFS");
+            Console.WriteLine($"Current Gain Reduction: {finalTelem.CurrentGainReductionDb:F2} dB");
+            Console.WriteLine($"Maximum Gain Reduction: {finalTelem.MaxGainReductionDb:F2} dB");
+            Console.WriteLine($"Limiter Activations:    {finalTelem.LimiterActivations}");
+            Console.WriteLine($"APOProcess() Calls:     {finalTelem.ProcessCount}");
+            Console.WriteLine($"Total Frames Processed: {finalTelem.TotalFramesProcessed}");
+            Console.WriteLine($"Last Process Tick:      {finalTelem.LastProcessTick}");
+            Console.WriteLine("----------------------------------");
         }
         else
         {
             Console.ForegroundColor = ConsoleColor.Yellow;
             Console.WriteLine("2. APOProcess() Active Execution:    PENDING INSTALLATION / ACTIVATION");
-            Console.WriteLine("3. Fixed Sample Attenuation (-12dB): PENDING INSTALLATION / ACTIVATION");
+            Console.WriteLine("3. Brickwall Ceiling Enforcement:   PENDING INSTALLATION / ACTIVATION");
             Console.ResetColor();
+            allPassed = false;
         }
 
         Console.WriteLine("==========================================================");
+        Console.WriteLine($"STATUS: {(allPassed ? "ALL CHECKS PASSED - PHASE 2 VERIFIED" : "VERIFICATION INCOMPLETE")}");
+        Console.WriteLine("==========================================================");
         Console.WriteLine();
+
+        string apoLogPath = @"C:\Users\Public\permadb_apo.log";
+        if (File.Exists(apoLogPath))
+        {
+            Console.WriteLine("[APO LOG - C:\\Users\\Public\\permadb_apo.log]");
+            try
+            {
+                var lines = File.ReadAllLines(apoLogPath);
+                int count = Math.Min(lines.Length, 20);
+                for (int i = lines.Length - count; i < lines.Length; i++)
+                {
+                    Console.WriteLine("  " + lines[i]);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("  Could not read log: " + ex.Message);
+            }
+            Console.WriteLine();
+        }
     }
 }

@@ -16,8 +16,9 @@
 - [🎛️ Safe Listening Presets](#️-safe-listening-presets)
 - [🏗️ System Architecture](#️-system-architecture)
 - [🚀 Quick Start (Installation & Tray Setup)](#-quick-start-installation--tray-setup)
+- [🔐 Deployment Architecture](#-deployment-architecture-development-vs-production-signing)
 - [🛠️ Building from Source](#️-building-from-source)
-- [🗺️ Project Roadmap & Architecture](#️-project-roadmap--architecture)
+- [🗺️ Milestones / Project Status](#️-milestones--project-status)
 - [📄 License](#-license)
 
 ---
@@ -164,14 +165,38 @@ flowchart TB
 ## 🚀 Quick Start (Installation & Tray Setup)
 
 ### 1-Click Setup Installer (`PermadB-Setup.exe`)
-Download and double-click **`PermadB-Setup.exe`**:
-* Installs cleanly to `%LOCALAPPDATA%\Programs\PermadB` (no admin rights or UAC prompts required).
+Download and run **`PermadB-Setup.exe`**:
+* Installs cleanly to `%ProgramFiles%\PermadB` (or `%LOCALAPPDATA%\Programs\PermadB`) with UAC Administrator elevation.
+* Automatically registers and binds the **PermadB Limiter APO** (`PermadBApo.dll`) into the Windows Audio Engine endpoint processing chain.
+* Preserves OEM and hardware audio enhancement chains (EFX/MFX/SFX) with complete rollback backups.
 * Creates **Desktop** and **Start Menu** shortcuts.
 * Configures **Start with Windows** automatically.
-* Registers in **Windows Settings -> Installed Apps / Add or Remove Programs** (complete with dedicated `Uninstall.exe`).
+* Registers in **Windows Settings -> Installed Apps / Add or Remove Programs** (complete with dedicated `Uninstall.exe` for 1-click clean removal and endpoint restoration).
 * Launches PermadB immediately into your system tray!
 
-### 💡 Windows 11 System Tray Visibility Note
+---
+
+## 🔐 Deployment Architecture: Development vs. Production Signing
+
+### audiodg.exe & The Windows Audio Security Model
+In Windows 11 and 10, the Windows Audio Engine (`audiodg.exe`) operates under Protected Process Light (PPL) isolation to protect multimedia DRM pipelines. By default, `audiodg.exe` will refuse to load any Audio Processing Object (APO) DLL that is not signed by Microsoft's production hardware root authority (`STATUS_IMAGE_CERT_REVOKED` / `0xC0000428`).
+
+### Development / Test Mode (Current Open-Source Release)
+To allow developers and users of this open-source project to run the high-performance C++ Limiter APO without requiring an expensive commercial EV Code Signing certificate ($500+/year) and Microsoft Hardware Dev Center account:
+* The installer configures `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Audio\DisableProtectedAudioDG = 1`.
+* This instructs Windows to permit unsigned or custom-compiled APO binaries inside `audiodg.exe`.
+* Full PCM sample limiting, sub-millisecond lookahead brickwall safety, and endpoint chain preservation function immediately out-of-the-box.
+
+### Commercial Production Requirements (Enterprise / OEM)
+For enterprise distribution, OEM bundling, or commercial retail deployment without modifying `DisableProtectedAudioDG`:
+1. **INF Packaging**: The APO DLL must be packaged with an Audio Driver INF (`Class=AudioProcessingObject`, `ClassGuid={5989fce8-9cd0-467d-8a6a-5419e31529d4}`).
+2. **Microsoft Hardware Dev Center (WHDC)**: The driver package must be submitted to Microsoft WHDC.
+3. **Attestation / WHQL Signing**: Microsoft validates the driver package and issues an official Microsoft Windows Hardware Compatibility Publisher digital signature embedded in the driver catalog (`.cat`).
+4. **Protected PPL Loading**: With WHDC Attestation signing, `audiodg.exe` loads the APO natively under full PPL protection (`DisableProtectedAudioDG = 0`).
+
+---
+
+## 💡 Windows 11 System Tray Visibility Note
 By default, Windows 11 tucks new background notification icons behind the **`^` (chevron)** overflow menu on the taskbar.
 * Click the **`^`** chevron next to your clock.
 * You will see the **PermadB green shield icon**.
@@ -184,6 +209,7 @@ By default, Windows 11 tucks new background notification icons behind the **`^` 
 ### Prerequisites
 1. [.NET 9.0 SDK](https://dotnet.microsoft.com/download/dotnet/9.0)
 2. [Node.js 20+](https://nodejs.org/)
+3. [Visual Studio 2022 / Build Tools](https://visualstudio.microsoft.com/) with C++ desktop workload (`cl.exe`, `link.exe`, Windows 10/11 SDK)
 
 ### 1-Click Build Script
 Run the automated build script:
@@ -191,28 +217,108 @@ Run the automated build script:
 build.bat
 ```
 This single script will:
-1. Bundle the React 19 UI into `PermadBCode/App/wwwroot/`.
-2. Compile the .NET 9 CoreAudio application into `dist/`.
-3. Compile the standalone `Uninstall.exe`.
-4. Pack the self-contained single-file installer: **`PermadB-Setup.exe`**!
+1. Compile the native C++ Limiter APO (`PermadBApo.dll`) with full MSVC optimization (`/O2 /fp:fast`).
+2. Bundle the React 19 UI into `PermadBCode/App/wwwroot/`.
+3. Compile the .NET 9 CoreAudio application into `dist/`.
+4. Compile the standalone `Uninstall.exe`.
+5. Pack the self-contained single-file installer: **`PermadB-Setup.exe`**!
 
 ---
 
-## 🗺️ Project Roadmap & Architecture
+## 🗺️ Milestones / Project Status
 
-PermadB is maintained as an open-source project focused on lightweight, robust audio decibel protection for personal computing.
+### Current State
+PermadB's core audio-processing concept has been proven on real Windows audio: PCM audio can pass through a PermadB APO and be constrained to a digital ceiling without changing Windows volume controls. The remaining major engineering milestone is converting the development-mode installation into a properly packaged and signed production Windows deployment.
 
-### 📌 Milestone Status
-- [x] Windows 11 / 10 CoreAudio WASAPI Integration
-- [x] Permanent System Tray Resident with GDI+ Dynamic Shield Icons
-- [x] Double-Layer Hardware Volume Governor (< 15ms reaction time)
-- [x] Strict Ceiling Guard (blocks spikes above safe ceiling; allows lowering freely)
-- [x] Per-Application Windows Sound Mixer Guard & Auto-Leveler (CS2, games, media)
-- [x] Calibration Wizard
-- [x] Single-click Windows Installer (`PermadB-Setup.exe`) & Uninstaller
-- [ ] **macOS Support:** CoreAudio HAL engine daemon
-- [ ] **Linux Support:** PipeWire / PulseAudio native limiter daemon
-- [ ] **Audio Processing Object (APO):** True sample-level brickwall compression DSP driver
+---
+
+### Milestone 1 — Fixed Attenuation APO
+**Status: VERIFIED**
+* PermadB successfully loaded as a Windows APO.
+* Windows audio passed through the APO.
+* PCM audio was modified by the APO.
+* Windows Master Volume remained unchanged.
+* Verified with the HyperX Cloud III Wireless endpoint.
+
+### Milestone 2 — Real-Time Lookahead Limiter
+**Status: VERIFIED**
+* Replaced fixed attenuation with a real lookahead peak limiter.
+* Configured ceiling: `-1.0 dBFS`.
+* Approximately 5 ms lookahead based on the actual sample rate.
+* Linked multichannel peak detection.
+* Deterministic DSP tests: **5/5 passed**.
+* Live Windows APO test successfully limited `0.0 dBFS` input to approximately `-1.0 dBFS`.
+* Verified at 48 kHz stereo.
+* Windows Master Volume remained unchanged at 100%.
+
+### Milestone 3 — Windows Integration
+**Status: VERIFIED**
+* PermadB runs inside the Windows audio processing path:
+  `Windows Audio Engine → PermadB APO → Limited PCM → Playback Device`
+* Live processing through `audiodg.exe` was verified.
+* The limiter processes the PCM audio itself rather than controlling Windows volume.
+
+### Milestone 4 — Installer
+**Status: VERIFIED — DEVELOPMENT MODE**
+* Automated installer created.
+* Administrator elevation is implemented.
+* APO registration and endpoint configuration are automated.
+* Uninstall and rollback logic are implemented.
+* Existing endpoint effect configuration is backed up and restored.
+* The installer currently uses `DisableProtectedAudioDG=1` for unsigned development/testing.
+
+> [!NOTE]
+> `DisableProtectedAudioDG=1` is a **development/testing mechanism only**, NOT a production deployment solution.
+
+### Milestone 5 — Volume Manipulation Removal
+**Status: VERIFIED**
+* PermadB does not enforce its limit by changing Windows Master Volume.
+* Per-application/session volume manipulation was removed.
+* Repository-wide audit found no remaining volume mutators.
+* Live testing confirmed Windows Master Volume stayed unchanged while limiting occurred.
+
+### Milestone 6 — Production Windows Deployment
+**Status: NOT YET VERIFIED / IN PROGRESS**
+
+Production signing and proper Windows driver/APO package deployment are not yet completed. The current unsigned development configuration (`DisableProtectedAudioDG=1`) works for local development and testing, but is NOT a production deployment solution.
+
+Realistically, reaching full production deployment is divided into two clear phases:
+
+#### 🛠️ Phase A — Free Engineering (Community Contributions Welcome!)
+* [ ] Proper APO INF (`Class=AudioProcessingObject`)
+* [ ] CAT generation via `Inf2Cat`
+* [ ] Proper package structure
+* [ ] Installer installs package (`pnputil /add-driver`)
+* [ ] Uninstaller removes package (`pnputil /delete-driver`)
+* [ ] No `DisableProtectedAudioDG` requirement
+* [ ] Secure Boot ON compatibility
+* [ ] Clean Windows 11 test
+* [ ] Test HyperX
+* [ ] Test another USB device
+* [ ] Test Bluetooth
+* [ ] Test built-in audio
+* [ ] Verify Windows volume never changes
+* [ ] Verify limiter still works
+
+#### 🔑 Phase B — Microsoft Signing
+* [ ] Create Hardware Dev Center / Partner Center account
+* [ ] Get required certificate (EV Code Signing)
+* [ ] Submit package
+* [ ] Microsoft signs it (Attestation / WHQL)
+* [ ] Download signed package
+* [ ] Install on clean Windows 11
+* [ ] Verify APO loads normally in `audiodg.exe` with full PPL protection
+* [ ] Verify Secure Boot remains ON
+
+---
+
+### 🤝 Want to Help? Reach Out!
+PermadB is an open-source initiative dedicated to preventing irreversible hearing damage and tinnitus. 
+
+If you are a Windows audio/driver engineer, packaging specialist, or have experience with **Microsoft Hardware Dev Center (WHDC) attestation signing**, we would love your help to get PermadB fully signed and production-ready! 
+
+* Open an Issue or Discussion on GitHub to collaborate on INF packaging and testing.
+* If you or your organization can sponsor or assist with Microsoft Partner Center EV code signing, please get in touch!
 
 ---
 

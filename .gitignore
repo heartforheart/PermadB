@@ -11,6 +11,8 @@ dist-standalone/
 *.obj
 *.exp
 *.lib
+*.old
+PermadBCode/APO/test_dsp.exe
 
 # Node & UI
 node_modules/

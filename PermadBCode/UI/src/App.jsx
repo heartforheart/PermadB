@@ -550,7 +550,7 @@ export default function App() {
             >
               <Moon size={20} color={settings.activePreset === 'night' ? '#10b981' : '#94a3b8'} />
               <span className="preset-btn-name">Night / Relaxed</span>
-              <span className="preset-btn-desc">45% / ~60 dB</span>
+              <span className="preset-btn-desc">50% / ~68 dB</span>
             </button>
 
             <button 
@@ -559,7 +559,7 @@ export default function App() {
             >
               <Sparkles size={20} color={settings.activePreset === 'studio' ? '#10b981' : '#94a3b8'} />
               <span className="preset-btn-name">Studio Dynamic</span>
-              <span className="preset-btn-desc">80% / ~85 dB</span>
+              <span className="preset-btn-desc">85% / ~82 dB</span>
             </button>
           </div>
 

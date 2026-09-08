@@ -74,8 +74,22 @@ static class Program
                 try { File.Delete(startMenuLnk); } catch { }
             }
 
-            // 5. Self-cleanup: launch cmd to delete directory after this process exits
+            // 4b. Remove User AppData Configuration (ensures clean reinstall)
+            try
+            {
+                var appDataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "PermadB");
+                if (Directory.Exists(appDataDir))
+                {
+                    Directory.Delete(appDataDir, true);
+                }
+            }
+            catch { }
+
+            // 5. Unregister and remove PermadB Limiter APO
             var appDir = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
+            UninstallApo(appDir);
+
+            // 6. Self-cleanup: launch cmd to delete directory after this process exits
             var cmdArgs = $"/C ping 127.0.0.1 -n 2 > nul & rmdir /s /q \"{appDir}\"";
             Process.Start(new ProcessStartInfo
             {
@@ -102,5 +116,164 @@ static class Program
                 MessageBox.Show($"Error during uninstall: {ex.Message}", "Uninstall Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
+    }
+
+    private static void UninstallApo(string appDir)
+    {
+        const string clsid = "{968ff234-1895-49f1-8b97-9d9075eb25b6}";
+        const string pkeyEfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},7";
+        const string pkeyCompositeEfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},15";
+
+        // 1. Remove APO associations from all render endpoints
+        try
+        {
+            using var renderKey = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render");
+            if (renderKey != null)
+            {
+                var subKeyNames = renderKey.GetSubKeyNames();
+                foreach (var deviceId in subKeyNames)
+                {
+                    try
+                    {
+                        var fxSubPath = $@"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render\{deviceId}\FxProperties";
+                        RegistryKey? fxKey = null;
+                        try
+                        {
+                            fxKey = Registry.LocalMachine.OpenSubKey(
+                                fxSubPath,
+                                RegistryKeyPermissionCheck.ReadWriteSubTree,
+                                System.Security.AccessControl.RegistryRights.SetValue | System.Security.AccessControl.RegistryRights.QueryValues);
+                        }
+                        catch { }
+
+                        if (fxKey != null)
+                        {
+                            using (fxKey)
+                            {
+                                const string pkeyEfxModes = "{d3993a3f-99c2-4402-b5ec-a92a0367664b},7";
+
+                                // 1. Restore PKEY_FX_EndpointEffectClsid (,7)
+                                var currentEfx = fxKey.GetValue(pkeyEfx) as string;
+                                if (string.Equals(currentEfx, clsid, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    var backupEfx = fxKey.GetValue("PermadB_Backup_EFX") as string;
+                                    if (!string.IsNullOrEmpty(backupEfx))
+                                    {
+                                        fxKey.SetValue(pkeyEfx, backupEfx, RegistryValueKind.String);
+                                        fxKey.DeleteValue("PermadB_Backup_EFX", false);
+                                    }
+                                    else
+                                    {
+                                        fxKey.DeleteValue(pkeyEfx, false);
+                                    }
+                                }
+
+                                // 2. Restore PKEY_CompositeFX_EndpointEffectClsid (,15)
+                                var currentComp = fxKey.GetValue(pkeyCompositeEfx) as string[];
+                                if (currentComp != null && currentComp.Any(s => string.Equals(s, clsid, StringComparison.OrdinalIgnoreCase)))
+                                {
+                                    var backupComp = fxKey.GetValue("PermadB_Backup_CompositeEFX") as string[];
+                                    if (backupComp != null && backupComp.Length > 0)
+                                    {
+                                        fxKey.SetValue(pkeyCompositeEfx, backupComp, RegistryValueKind.MultiString);
+                                        fxKey.DeleteValue("PermadB_Backup_CompositeEFX", false);
+                                    }
+                                    else
+                                    {
+                                        var remainingComp = currentComp.Where(s => !string.Equals(s, clsid, StringComparison.OrdinalIgnoreCase)).ToArray();
+                                        if (remainingComp.Length > 0)
+                                        {
+                                            fxKey.SetValue(pkeyCompositeEfx, remainingComp, RegistryValueKind.MultiString);
+                                        }
+                                        else
+                                        {
+                                            fxKey.DeleteValue(pkeyCompositeEfx, false);
+                                        }
+                                    }
+                                }
+                                fxKey.DeleteValue("PermadB_Created_CompositeEFX", false);
+
+                                // 3. Restore PKEY_EFX_ProcessingModes_Supported_For_Streaming (,7)
+                                var backupEfxModes = fxKey.GetValue("PermadB_Backup_EFXModes") as string[];
+                                if (backupEfxModes != null && backupEfxModes.Length > 0)
+                                {
+                                    fxKey.SetValue(pkeyEfxModes, backupEfxModes, RegistryValueKind.MultiString);
+                                    fxKey.DeleteValue("PermadB_Backup_EFXModes", false);
+                                }
+                                else if (fxKey.GetValue("PermadB_Created_EFXModes") != null)
+                                {
+                                    fxKey.DeleteValue(pkeyEfxModes, false);
+                                    fxKey.DeleteValue("PermadB_Created_EFXModes", false);
+                                }
+
+                                fxKey.DeleteValue("PermadB_Installed_DeviceId", false);
+                            }
+                        }
+                    }
+                    catch { }
+                }
+            }
+        }
+        catch { }
+
+        // 2. Unregister COM DLL
+        try
+        {
+            var apoDllPath = Path.Combine(appDir, "PermadBApo.dll");
+            if (File.Exists(apoDllPath))
+            {
+                var psi = new ProcessStartInfo("regsvr32.exe", $"/u /s \"{apoDllPath}\"")
+                {
+                    CreateNoWindow = true,
+                    UseShellExecute = false
+                };
+                var proc = Process.Start(psi);
+                proc?.WaitForExit(5000);
+            }
+        }
+        catch { }
+
+        // 3. Remove AudioEngine AudioProcessingObjects & CLSID registry entries
+        try
+        {
+            Registry.LocalMachine.DeleteSubKeyTree(@"SOFTWARE\Classes\AudioEngine\AudioProcessingObjects\{968ff234-1895-49f1-8b97-9d9075eb25b6}", false);
+            Registry.LocalMachine.DeleteSubKeyTree(@"SOFTWARE\Classes\CLSID\{968ff234-1895-49f1-8b97-9d9075eb25b6}", false);
+        }
+        catch { }
+
+        // 4. Restart Windows Audio Service to release DLL
+        try
+        {
+            foreach (var p in Process.GetProcessesByName("audiodg"))
+            {
+                try { p.Kill(); p.WaitForExit(2000); } catch { }
+            }
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                Arguments = "-NoProfile -ExecutionPolicy Bypass -Command \"Restart-Service -Name audiosrv -Force\"",
+                CreateNoWindow = true,
+                UseShellExecute = false
+            };
+            var proc = Process.Start(psi);
+            proc?.WaitForExit(10000);
+        }
+        catch { }
+
+        // 5. Clean up public telemetry file and logs
+        try
+        {
+            const string telemPath = @"C:\Users\Public\permadb_apo_telemetry.dat";
+            if (File.Exists(telemPath)) File.Delete(telemPath);
+        }
+        catch { }
+
+        try
+        {
+            const string logPath = @"C:\Users\Public\permadb_apo.log";
+            if (File.Exists(logPath)) File.Delete(logPath);
+        }
+        catch { }
     }
 }
