@@ -42,7 +42,7 @@ static class Program
 
         tray.OnOpenDashboardRequested += () =>
         {
-            dashboardForm.BeginInvoke(new Action(() => dashboardForm.ToggleNearTray()));
+            dashboardForm.SafeToggleNearTray();
         };
 
         tray.OnExitRequested += () =>
@@ -62,7 +62,7 @@ static class Program
                     {
                         _showSignal.WaitOne();
                         if (dashboardForm.IsDisposed) break;
-                        dashboardForm.BeginInvoke(new Action(() => dashboardForm.ShowNearTray()));
+                        dashboardForm.SafeShowNearTray();
                     }
                     catch { break; }
                 }

@@ -82,6 +82,9 @@ public class DashboardForm : Form
 
         InitializeComponent();
 
+        // Ensure Win32 window handle is created immediately so BeginInvoke/Invoke never throws
+        _ = this.Handle;
+
         _refreshTimer = new System.Windows.Forms.Timer
         {
             Interval = 33 // ~30 FPS
@@ -548,6 +551,32 @@ public class DashboardForm : Form
         {
             ShowNearTray();
         }
+    }
+
+    public void SafeShowNearTray()
+    {
+        if (this.IsDisposed) return;
+        if (!this.IsHandleCreated) _ = this.Handle;
+
+        if (this.InvokeRequired)
+        {
+            try { this.BeginInvoke(new Action(SafeShowNearTray)); } catch { }
+            return;
+        }
+        ShowNearTray();
+    }
+
+    public void SafeToggleNearTray()
+    {
+        if (this.IsDisposed) return;
+        if (!this.IsHandleCreated) _ = this.Handle;
+
+        if (this.InvokeRequired)
+        {
+            try { this.BeginInvoke(new Action(SafeToggleNearTray)); } catch { }
+            return;
+        }
+        ToggleNearTray();
     }
 }
 
