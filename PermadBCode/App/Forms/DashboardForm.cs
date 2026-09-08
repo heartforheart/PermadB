@@ -75,6 +75,9 @@ public class DashboardForm : Form
     private CheckBox _chkAppMixer = null!;
     private CheckBox _chkStartup = null!;
 
+    private bool _isUpdatingUi = false;
+    private string _lastKnownPreset = string.Empty;
+
     public DashboardForm(ConfigManager config, AudioEngine engine)
     {
         _config = config;
@@ -301,7 +304,7 @@ public class DashboardForm : Form
             BackColor = _bgCard,
             Cursor = Cursors.Hand
         };
-        _customCeilingSlider.ValueChanged += CustomCeilingSlider_ValueChanged;
+        _customCeilingSlider.Scroll += CustomCeilingSlider_Scroll;
 
         _customCeilingCard.Controls.Add(_customCeilingLabel);
         _customCeilingCard.Controls.Add(_customCeilingSlider);
@@ -466,37 +469,40 @@ public class DashboardForm : Form
 
     private void ApplyPreset(string preset)
     {
-        _engine.ApplyPreset(preset);
-        UpdatePresetCards();
-
-        var profile = _engine.GetActiveProfile();
-        if (_customCeilingSlider.Value != (int)profile.SafeCeilingPercent)
+        _isUpdatingUi = true;
+        try
         {
-            _customCeilingSlider.Value = (int)Math.Clamp(profile.SafeCeilingPercent, 30, 95);
+            _engine.ApplyPreset(preset);
+            _lastKnownPreset = preset;
+            var profile = _engine.GetActiveProfile();
+            int sliderVal = (int)Math.Clamp(profile.SafeCeilingPercent, 30, 95);
+            _customCeilingSlider.Value = sliderVal;
+            _customCeilingLabel.Text = $"Custom Limiter Ceiling: {profile.SafeCeilingPercent:F0}% ({profile.TargetSafeDbSpl:F0} dBA)";
+            UpdatePresetCards();
         }
-        _customCeilingLabel.Text = $"Custom Limiter Ceiling: {profile.SafeCeilingPercent:F0}% ({profile.TargetSafeDbSpl:F0} dBA)";
+        finally
+        {
+            _isUpdatingUi = false;
+        }
     }
 
-    private void CustomCeilingSlider_ValueChanged(object? sender, EventArgs e)
+    private void CustomCeilingSlider_Scroll(object? sender, EventArgs e)
     {
+        if (_isUpdatingUi) return;
         var percent = _customCeilingSlider.Value;
         var estDb = 50.0f + (percent / 100.0f) * 38.0f;
         _customCeilingLabel.Text = $"Custom Limiter Ceiling: {percent}% ({estDb:F0} dBA)";
-
-        // If user drags slider, activate custom preset
-        if (_config.Settings.ActivePreset != "custom" || Math.Abs(_engine.GetActiveProfile().SafeCeilingPercent - percent) > 1.0f)
-        {
-            _engine.SetSafeCeiling(percent);
-            UpdatePresetCards();
-        }
+        _engine.SetSafeCeiling(percent);
+        _lastKnownPreset = "custom";
+        UpdatePresetCards();
     }
 
     private void UpdatePresetCards()
     {
         var preset = _config.Settings.ActivePreset;
-        _cardSafe.IsActive = (preset == "safe");
-        _cardNight.IsActive = (preset == "night");
-        _cardStudio.IsActive = (preset == "studio");
+        _cardSafe.IsActive = string.Equals(preset, "safe", StringComparison.OrdinalIgnoreCase);
+        _cardNight.IsActive = string.Equals(preset, "night", StringComparison.OrdinalIgnoreCase);
+        _cardStudio.IsActive = string.Equals(preset, "studio", StringComparison.OrdinalIgnoreCase);
 
         _cardSafe.Invalidate();
         _cardNight.Invalidate();
@@ -521,6 +527,28 @@ public class DashboardForm : Form
 
         // Keep power status synced
         UpdatePowerStatusUI();
+
+        // Sync preset cards if changed externally (e.g. from system tray context menu)
+        var currentPreset = _config.Settings.ActivePreset;
+        if (!_isUpdatingUi && !string.Equals(_lastKnownPreset, currentPreset, StringComparison.OrdinalIgnoreCase))
+        {
+            _lastKnownPreset = currentPreset;
+            UpdatePresetCards();
+            _isUpdatingUi = true;
+            try
+            {
+                int targetVal = (int)Math.Clamp(profile.SafeCeilingPercent, 30, 95);
+                if (_customCeilingSlider.Value != targetVal)
+                {
+                    _customCeilingSlider.Value = targetVal;
+                }
+                _customCeilingLabel.Text = $"Custom Limiter Ceiling: {profile.SafeCeilingPercent:F0}% ({profile.TargetSafeDbSpl:F0} dBA)";
+            }
+            finally
+            {
+                _isUpdatingUi = false;
+            }
+        }
     }
 
     public void ShowNearTray()
@@ -802,7 +830,13 @@ public class PresetCardControl : Panel
 
         this.MouseEnter += (s, e) => { _isHovered = true; this.Invalidate(); };
         this.MouseLeave += (s, e) => { _isHovered = false; this.Invalidate(); };
-        this.Click += (s, e) => _onClick();
+        this.MouseUp += (s, e) =>
+        {
+            if (e.Button == MouseButtons.Left && this.ClientRectangle.Contains(e.Location))
+            {
+                _onClick();
+            }
+        };
     }
 
     protected override void OnPaint(PaintEventArgs e)

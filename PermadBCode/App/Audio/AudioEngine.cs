@@ -148,14 +148,15 @@ public class AudioEngine : IMMNotificationClient, IDisposable
 
     public void SetSafeCeiling(float percent)
     {
+        var profile = GetActiveProfile();
+        profile.SafeCeilingPercent = Math.Clamp(percent, 10.0f, 100.0f);
+        profile.TargetSafeDbSpl = 50.0f + (profile.SafeCeilingPercent / 100.0f) * 38.0f;
+        _config.Settings.ActivePreset = "custom";
+        _config.Save();
+        UpdateCachedProfile(profile);
+
         PostToAudioThread(() =>
         {
-            var profile = GetActiveProfile();
-            profile.SafeCeilingPercent = Math.Clamp(percent, 10.0f, 100.0f);
-            profile.TargetSafeDbSpl = 50.0f + (profile.SafeCeilingPercent / 100.0f) * 38.0f;
-            _config.Settings.ActivePreset = "custom";
-            _config.Save();
-
             // Ensure Windows master volume is maintained at 100%
             if (_activeDevice != null && !_isCurrentlyClamping)
             {
@@ -172,42 +173,42 @@ public class AudioEngine : IMMNotificationClient, IDisposable
             }
 
             InternalEnforceCeiling();
-            UpdateCachedProfile(profile);
         });
     }
 
     public void ApplyPreset(string preset)
     {
+        var profile = GetActiveProfile();
+
+        switch (preset.ToLowerInvariant())
+        {
+            case "night":
+                profile.SafeCeilingPercent = 50.0f;
+                profile.TargetSafeDbSpl = 68.0f;
+                _config.Settings.DynamicThresholdDbfs = -6.0f;
+                _config.Settings.ActivePreset = "night";
+                break;
+            case "studio":
+                profile.SafeCeilingPercent = 85.0f;
+                profile.TargetSafeDbSpl = 82.0f;
+                _config.Settings.DynamicThresholdDbfs = -1.5f;
+                _config.Settings.ActivePreset = "studio";
+                break;
+            case "safe":
+            default:
+                profile.SafeCeilingPercent = 65.0f;
+                profile.TargetSafeDbSpl = 75.0f;
+                _config.Settings.DynamicThresholdDbfs = -3.0f;
+                _config.Settings.ActivePreset = "safe";
+                break;
+        }
+
+        _config.Settings.DynamicLimiterEnabled = true;
+        _config.Save();
+        UpdateCachedProfile(profile);
+
         PostToAudioThread(() =>
         {
-            var profile = GetActiveProfile();
-
-            switch (preset.ToLowerInvariant())
-            {
-                case "night":
-                    profile.SafeCeilingPercent = 50.0f;
-                    profile.TargetSafeDbSpl = 68.0f;
-                    _config.Settings.DynamicThresholdDbfs = -6.0f;
-                    _config.Settings.ActivePreset = "night";
-                    break;
-                case "studio":
-                    profile.SafeCeilingPercent = 85.0f;
-                    profile.TargetSafeDbSpl = 82.0f;
-                    _config.Settings.DynamicThresholdDbfs = -1.5f;
-                    _config.Settings.ActivePreset = "studio";
-                    break;
-                case "safe":
-                default:
-                    profile.SafeCeilingPercent = 65.0f;
-                    profile.TargetSafeDbSpl = 75.0f;
-                    _config.Settings.DynamicThresholdDbfs = -3.0f;
-                    _config.Settings.ActivePreset = "safe";
-                    break;
-            }
-
-            _config.Settings.DynamicLimiterEnabled = true;
-            _config.Save();
-
             // Always maintain Windows master volume at 100%; the preset controls the Limiter ceiling!
             if (_activeDevice != null)
             {
@@ -228,7 +229,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                 }
             }
 
-            UpdateCachedProfile(profile);
+            InternalEnforceCeiling();
             InternalPollMeter();
         });
     }
