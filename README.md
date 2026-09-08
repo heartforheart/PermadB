@@ -252,6 +252,10 @@ Download and run **`PermadB-Setup.exe`**:
 * Configures **Start with Windows** automatically.
 * Registers in **Windows Settings -> Installed Apps / Add or Remove Programs** (complete with dedicated `Uninstall.exe` for 1-click clean removal and endpoint restoration).
 * Launches PermadB immediately into your system tray!
+By default, Windows 11 tucks new background notification icons behind the **`^` (chevron)** overflow menu on the taskbar.
+* Click the **`^`** chevron next to your clock.
+* You will see the **PermadB green shield icon**.
+* If you want it always visible directly on your main taskbar, simply **drag the shield icon** down onto your taskbar, or go to **Windows Settings -> Personalization -> Taskbar -> Other system tray icons** and switch **PermadB** to **On**.
 
 ---
 
@@ -273,14 +277,6 @@ This single script will:
 3. Compile the .NET 9 CoreAudio application into `dist/`.
 4. Compile the standalone `Uninstall.exe`.
 5. Pack the self-contained single-file installer: **`PermadB-Setup.exe`**!
-
----
-
-### 💡 Windows 11 System Tray Visibility Note
-By default, Windows 11 tucks new background notification icons behind the **`^` (chevron)** overflow menu on the taskbar.
-* Click the **`^`** chevron next to your clock.
-* You will see the **PermadB green shield icon**.
-* If you want it always visible directly on your main taskbar, simply **drag the shield icon** down onto your taskbar, or go to **Windows Settings -> Personalization -> Taskbar -> Other system tray icons** and switch **PermadB** to **On**.
 
 ---
 
