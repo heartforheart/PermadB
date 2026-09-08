@@ -1,8 +1,16 @@
 # 🛡️ Permanent Decibel & Hearing Protection Guard
 
-<img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /> <img src="https://img.shields.io/badge/Platform-Windows%2011%20%7C%2010-0078D6?logo=windows&logoColor=white" alt="Windows 11 / 10" /> <img src="https://img.shields.io/badge/.NET-9.0-512BD4?logo=dotnet&logoColor=white" alt=".NET 9.0" /> <img src="https://img.shields.io/badge/UI-React%2019%20%2B%20Vite-61DAFB?logo=react&logoColor=black" alt="React 19" /> <img src="https://img.shields.io/badge/Audio-WASAPI%20CoreAudio-10B981" alt="WASAPI CoreAudio" /> <img src="https://img.shields.io/badge/Safety-100%25%20Verified-10B981" alt="100% Verified Safe" />
+<img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /> <img src="https://img.shields.io/badge/Platform-Windows%2011%20%7C%2010-0078D6?logo=windows&logoColor=white" alt="Windows 11 / 10" /> <img src="https://img.shields.io/badge/.NET-9.0-512BD4?logo=dotnet&logoColor=white" alt=".NET 9.0" /> <img src="https://img.shields.io/badge/UI-React%2019%20%2B%20Vite-61DAFB?logo=react&logoColor=black" alt="React 19" /> <img src="https://img.shields.io/badge/Audio-WASAPI%20CoreAudio-10B981" alt="WASAPI CoreAudio" /> <img src="https://img.shields.io/badge/Limiter-DSP%20%26%20APO%20Verified-10B981" alt="Limiter Verified" />
 
-**An open-source, always-on Windows system tray utility that permanently enforces safe, comfortable decibel listening levels across all devices, games, videos, and applications.**
+**An open-source, always-on Windows system tray utility that enforces strict digital peak ceilings directly within the Windows Audio Engine to prevent sudden deafening audio spikes.**
+
+---
+
+> [!IMPORTANT]
+> ### 🩺 Acoustic & Medical Disclaimer
+> PermadB operates exclusively in the **digital PCM domain** ($dBFS$) inside the Windows Audio Engine (`audiodg.exe`). It guarantees that digital sample peaks leaving Windows never exceed the selected digital ceiling.
+> 
+> PermadB **cannot** measure, calibrate, or control physical acoustic sound pressure levels ($dBA\text{ SPL}$) hitting your eardrums, which depend on external analog hardware (headphone impedance, transducer sensitivity in $\text{dB SPL / 1 mW}$, external DAC/amp output voltage, and analog volume knobs). All real-world decibel estimates in this documentation assume direct connection of typical consumer headsets with zero analog preamplification. PermadB is an open-source digital audio limiter, not a certified medical or hearing-aid device.
 
 ---
 
@@ -27,7 +35,7 @@
 
 Permanent hearing damage and tinnitus are irreversible. Modern audio devices and soundcards can easily output acoustic levels upwards of $105\text{ dBA}$ directly into ears or high-power speakers, yet operating systems offer **zero native protection** against uncompressed audio spikes in games, deafening video ads, or accidental volume slider jumps to 100%.
 
-**PermadB** solves this by running permanently in your Windows system tray, actively monitoring CoreAudio endpoints at 50Hz to ensure that every song, movie, game, voice call, or live mix is automatically capped and maintained at safe, fatigue-free decibel levels.
+**PermadB** solves this by running permanently in your Windows system tray, actively monitoring CoreAudio endpoints at 50Hz to ensure that audio streams passing through the Windows Audio Engine are dynamically constrained to safe digital peak ceilings.
 
 ---
 
@@ -61,11 +69,11 @@ This guarantees that setting a 30% or 50% ceiling applies genuine, powerful atte
 * **🔒 Pure Digital Limiting (Zero Slider Tampering):**  
   Windows Master Volume and Volume Mixer sliders remain completely static at 100%. All limiting occurs on raw PCM audio inside `audiodg.exe`.
 * **🎧 Presets Calibrated for Hearing Health:**  
-  * **Safe Ears (65% / ~75 dBA)**: Default daily listening mode compliant with WHO safe exposure guidelines.
-  * **Night / Relaxed (50% / ~68 dBA)**: Fatigue-free, ultra-quiet late-night listening.
-  * **Studio Dynamic (85% / ~82 dBA)**: Wide dynamic range for mastering and cinema while capping sudden explosions and loud ads.
-* **⚡ Sub-Millisecond Lookahead Transient Protection:**  
-  Protects against sudden discord screaming, gaming gunshots, accidental full-volume web ads, and jumpscares.
+  * **Safe Ears (65% / ~75 dBA*)**: Reference daytime listening mode aligned with WHO safe exposure guidelines.
+  * **Night / Relaxed (50% / ~68 dBA*)**: Fatigue-free, ultra-quiet late-night listening.
+  * **Studio Dynamic (85% / ~82 dBA*)**: Wide dynamic range for mastering and cinema while capping sudden explosions and loud ads.
+* **⚡ ~5 ms Lookahead Transient Protection:**  
+  Circular delay buffer (240 samples at 48 kHz) inspects upcoming audio peaks before DAC rendering, ramping down gain smoothly so sudden transients never clip or shock the listener.
 * **🎧 Smart Device Auto-Switching:**  
   Automatically detects when you switch between headphones, speakers, or USB headsets and maintains individual safe profiles per device.
 * **🔄 Lock-Free Shared-Memory Auto-Sync:**  
@@ -87,24 +95,24 @@ DJ setups split audio into several physical channels:
 * **Cue Output:** Sent to DJ headphones for track monitoring.
 * **Booth Monitors:** Secondary stage speakers.
 
-Because PermadB installs as an Audio Processing Object (APO) directly into the Windows Audio Engine rendering chain, all audio streams routed through Windows WASAPI are automatically limited at the PCM level. Even if master software output gains or track gains are driven into digital clipping ($0.0\text{ dBFS}$), PermadB's lookahead brickwall limiter clamps the signal to your safe listening ceiling with zero harmonic distortion.
+Because PermadB installs as an Audio Processing Object (APO) directly into the Windows Audio Engine rendering chain, all audio streams routed through Windows WASAPI are automatically limited at the PCM level. Even if master software output gains or track gains are driven into digital clipping ($0.0\text{ dBFS}$), PermadB's lookahead brickwall limiter clamps the signal to your safe listening ceiling with smooth lookahead gain attenuation designed to minimize audible distortion and pumping compared to harsh digital clipping.
 
-### 2. VirtualDJ / DJ Software Audio Driver Tip
-* **WASAPI Mode (Recommended):** Set your DJ software's audio engine to **WASAPI** (the Windows default). In this mode, audio routes through the Windows Audio Engine (`audiodg.exe`), ensuring PermadB's lookahead limiter protects both the master PA outputs and cue headphones.
-* **ASIO Drivers:** Note that low-latency ASIO bypasses the Windows Audio Engine entirely. To ensure PermadB can protect your audience and ears, select **WASAPI Exclusive** or **DirectX / CoreAudio** inside your DJ software's audio settings.
+### 2. Audio Driver Architecture & ASIO Bypass Notice
+* **WASAPI Shared Mode (Required for PermadB):** Set your DJ or DAW software's audio engine to **WASAPI (Shared)** or **DirectSound**. In this mode, audio routes through the Windows Audio Engine (`audiodg.exe`), ensuring PermadB's lookahead limiter protects both master PA outputs and cue headphones.
+* **ASIO & Kernel Streaming Limitation:** Low-latency **ASIO** and direct **Kernel Streaming (KS)** bypass the Windows Audio Engine (`audiodg.exe`) entirely. PermadB **cannot** intercept, process, or limit audio routed over an ASIO driver. For PermadB protection, use WASAPI Shared inside your DJ software.
 
 ---
 
 ## 🩺 Acoustic Safety & WHO Guidelines
 
-The World Health Organization (WHO) and NIOSH recommend a maximum weekly noise dose based on decibel levels:
+The World Health Organization (WHO) and NIOSH recommend maximum daily noise dose benchmarks based on sound pressure levels:
 
 | Sound Level | Daily Safe Limit | PermadB Mode | Real-World Equivalent |
 | :--- | :--- | :--- | :--- |
 | **< 60 dBA** | **Infinite (100% Safe)** | 🌙 **Night Mode** | Quiet library, soft conversational whisper |
 | **60 – 75 dBA** | **Infinite (All Day)** | 🛡️ **Safe Ears (Recommended)** | Normal relaxed speech, comfortable background music |
 | **75 – 85 dBA** | **4 – 8 hours / day** | 🎧 **Studio Dynamic** | Busy street traffic, dynamic orchestral peaks |
-| **85 – 100+ dBA** | **< 15 minutes (Damage Risk)** | ❌ **PermadB Clamps & Ducks** | Loud concerts, uncompressed gaming gunshots, siren blasts |
+| **85 – 100+ dBA** | **< 15 minutes (Damage Risk)** | ❌ **PermadB Clamps & Limits** | Loud concerts, uncompressed gaming gunshots, siren blasts |
 
 ---
 
@@ -114,12 +122,12 @@ PermadB translates user listening presets directly into digital brickwall ceilin
 
 | Preset | Slider % | Digital Brickwall Ceiling | Gain Reduction on Full-Scale ($0\text{ dBFS}$) | Est. Headphone Output ($\text{dBA SPL}$)* | Best For | Auditory Safety Profile |
 | :--- | :---: | :---: | :---: | :---: | :--- | :--- |
-| 🛡️ **Safe Ears (Default)** | **65%** | **$-10.3\text{ dBFS}$** ($0.3039$) | **$-9.3\text{ dB}$** | **$\sim 72 - 75\text{ dBA}$** | Everyday listening, YouTube, gaming, work | **WHO Safe Listening Standard.** Infinite, non-damaging daily listening. |
-| 🌙 **Night / Relaxed** | **50%** | **$-16.0\text{ dBFS}$** ($0.1575$) | **$-15.0\text{ dB}$** | **$\sim 65 - 68\text{ dBA}$** | Late night, audiobooks, voice calls | Ultra-quiet, fatigue-free listening with zero ear strain. |
-| 🎧 **Studio Dynamic** | **85%** | **$-4.5\text{ dBFS}$** ($0.5937$) | **$-3.5\text{ dB}$** | **$\sim 80 - 82\text{ dBA}$** | Music production, critical mixing, cinema | High dynamic range; clamps loud ads and gunshot bursts while preserving transients. |
+| 🛡️ **Safe Ears (Default)** | **65%** | **$-10.3\text{ dBFS}$** ($0.3039$) | **$-9.3\text{ dB}$** | **$\sim 72 - 75\text{ dBA}$** | Everyday listening, YouTube, gaming, work | Reference WHO Safe Listening Benchmark for estimated ~75 dBA levels. |
+| 🌙 **Night / Relaxed** | **50%** | **$-16.0\text{ dBFS}$** ($0.1575$) | **$-15.0\text{ dB}$** | **$\sim 65 - 68\text{ dBA}$** | Late night, audiobooks, voice calls | Fatigue-free, quiet listening with reduced ear strain. |
+| 🎧 **Studio Dynamic** | **85%** | **$-4.5\text{ dBFS}$** ($0.5937$) | **$-3.5\text{ dB}$** | **$\sim 80 - 82\text{ dBA}$** | Music production, critical mixing, cinema | Higher dynamic range; clamps loud bursts while preserving transients. |
 | ⚙️ **Custom Ceiling** | **10% – 100%** | **$-51.0$ to $-1.0\text{ dBFS}$** | **$-50.0$ to $0.0\text{ dB}$** | **User defined** | Granular user control | Fully custom ceiling configured via system tray or dashboard slider. |
 
-*\*Estimated on typical consumer gaming headsets / IEMs (such as HyperX Cloud III Wireless at $100\text{ dB SPL / 1 mW}$ sensitivity) with Windows Master Volume static at 100%.*
+*\*Estimated on typical consumer gaming headsets / IEMs (such as HyperX Cloud III Wireless at $\sim 100\text{ dB SPL / 1 mW}$ sensitivity) connected directly via USB/3.5mm with Windows Master Volume at 100% and zero analog preamplification. Actual acoustic sound pressure levels ($dBA\text{ SPL}$) cannot be determined from digital $dBFS$ alone without hardware-specific calibration and analog gain measurement.*
 
 ---
 
@@ -230,20 +238,20 @@ Download and run **`PermadB-Setup.exe`**:
 ## 🔐 Deployment Architecture: Development vs. Production Signing
 
 ### audiodg.exe & The Windows Audio Security Model
-In Windows 11 and 10, the Windows Audio Engine (`audiodg.exe`) operates under Protected Process Light (PPL) isolation to protect multimedia DRM pipelines. By default, `audiodg.exe` will refuse to load any Audio Processing Object (APO) DLL that is not signed by Microsoft's production hardware root authority (`STATUS_IMAGE_CERT_REVOKED` / `0xC0000428`).
+In Windows 11 and 10, the Windows Audio Engine (`audiodg.exe`) incorporates Protected Process Light (PPL) isolation as part of Protected User Mode Audio (PUMA) to guard DRM and audio pipelines. On systems with PPL or driver signature requirements enforced, `audiodg.exe` may reject third-party Audio Processing Object (APO) DLLs that do not bear a valid Microsoft Hardware Compatibility signature (`STATUS_IMAGE_CERT_REVOKED` / `0xC0000428`).
 
 ### Development / Test Mode (Current Open-Source Release)
 To allow developers and users of this open-source project to run the high-performance C++ Limiter APO without requiring an expensive commercial EV Code Signing certificate ($500+/year) and Microsoft Hardware Dev Center account:
 * The installer configures `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Audio\DisableProtectedAudioDG = 1`.
-* This instructs Windows to permit unsigned or custom-compiled APO binaries inside `audiodg.exe`.
-* Full PCM sample limiting, sub-millisecond lookahead brickwall safety, and endpoint chain preservation function immediately out-of-the-box.
+* This instructs Windows to permit custom-compiled APO binaries inside `audiodg.exe`.
+* Full PCM sample limiting, ~5 ms lookahead brickwall safety, and endpoint chain preservation function immediately out-of-the-box.
 
 ### Commercial Production Requirements (Enterprise / OEM)
-For enterprise distribution, OEM bundling, or commercial retail deployment without modifying `DisableProtectedAudioDG`:
-1. **INF Packaging**: The APO DLL must be packaged with an Audio Driver INF (`Class=AudioProcessingObject`, `ClassGuid={5989fce8-9cd0-467d-8a6a-5419e31529d4}`).
-2. **Microsoft Hardware Dev Center (WHDC)**: The driver package must be submitted to Microsoft WHDC.
-3. **Attestation / WHQL Signing**: Microsoft validates the driver package and issues an official Microsoft Windows Hardware Compatibility Publisher digital signature embedded in the driver catalog (`.cat`).
-4. **Protected PPL Loading**: With WHDC Attestation signing, `audiodg.exe` loads the APO natively under full PPL protection (`DisableProtectedAudioDG = 0`).
+For enterprise distribution, OEM bundling, or production deployment without requiring `DisableProtectedAudioDG`:
+1. **INF Packaging & InfVerif Validation**: The APO DLL must be packaged with an Audio Driver INF (`Class=AudioProcessingObject`, `ClassGuid={5989fce8-9cd0-467d-8a6a-5419e31529d4}`) and pass Microsoft's WDK `InfVerif.exe /u` test suite.
+2. **Microsoft Hardware Dev Center & HLK Certification**: Under Microsoft's official [Implementing Audio Processing Objects](https://learn.microsoft.com/en-us/windows-hardware/drivers/audio/implementing-audio-processing-objects) documentation, obtaining the protected environment signature attribute (`SignatureAttributes.PETrust`) required for `audiodg.exe` PPL loading cannot be achieved through basic automated attestation alone; it requires submitting test logs passing the official **Windows Hardware Lab Kit (HLK)** audio test playlist.
+3. **Microsoft Production Signature**: Upon passing HLK certification, Microsoft issues an official catalog signature granting protected media trust.
+4. **Protected Loading**: With official WHDC HLK signing, `audiodg.exe` loads the APO natively under full PPL protection (`DisableProtectedAudioDG = 0`).
 
 ---
 
@@ -336,29 +344,30 @@ Production signing and proper Windows driver/APO package deployment are not yet 
 Realistically, reaching full production deployment is divided into two clear phases:
 
 #### 🛠️ Phase A — Free Engineering (Completed & In Progress)
-* [x] **Proper APO INF** (`Class=AudioProcessingObject`, `ClassGuid={5989fce8-9cd0-467d-8a6a-5419e31529d4}`)
-* [x] **CAT generation** (Automated via `makecat.exe` and `PermadBApo.cdf`)
-* [x] **Proper package structure** (`driver_package/` directory with INF, CAT, DLL, and WHDC documentation)
-* [x] **Installer installs package** (`pnputil /add-driver` integration & OEM inf tracking in `InstallerEngine.cs`)
-* [x] **Uninstaller removes package** (`pnputil /delete-driver <oem#.inf> /uninstall /force` in `Uninstall.exe`)
-* [x] **Test HyperX** (Verified on HyperX Cloud III Wireless endpoint)
-* [x] **Verify Windows volume never changes** (Windows volume stays 100% static; zero slider manipulation)
-* [x] **Verify limiter still works** (Real-time lookahead brickwall DSP clamping PCM audio at safe ceilings)
+* [x] **Working Draft APO INF** (Draft modeled on Windows 11 in-box APO schema in [`PermadBApo.inf`](file:///A:/Projects2/PermadB/PermadBCode/APO/PermadBApo.inf); local DriverStore staging verified via `pnputil`)
+* [x] **CAT generation** (Automated catalog hashing via Windows SDK `makecat.exe` using [`PermadBApo.cdf`](file:///A:/Projects2/PermadB/PermadBCode/APO/PermadBApo.cdf); verified `PermadBApo.cat`)
+* [x] **Proper package structure** (Dedicated [`driver_package/`](file:///A:/Projects2/PermadB/driver_package/) directory containing INF, CAT, 64-bit DLL, and WHDC documentation)
+* [x] **Installer installs package** (Automated `pnputil.exe /add-driver ... /install` staging and `DriverOemInf` registry tracking in [`InstallerEngine.cs`](file:///A:/Projects2/PermadB/installer/InstallerEngine.cs))
+* [x] **Uninstaller removes package** (Automated `pnputil.exe /delete-driver <oem#.inf> /uninstall /force` DriverStore purging in [`Uninstall.exe`](file:///A:/Projects2/PermadB/installer/uninstaller/Program.cs))
+* [x] **Test HyperX** (Verified live inside `audiodg.exe` on HyperX Cloud III Wireless `{016f299a-9d06-4ee3-af64-694963b2b204}`; 0 overshoots across 1.9M+ samples at 48 kHz stereo)
+* [x] **Verify Windows volume never changes** (Windows Master Volume verified static at 100% / scalar 1.0; code audited with zero volume slider mutators)
+* [x] **Verify limiter still works** (Deterministic unit tests passed: 5/5 in `test_dsp.exe`; live telemetry verified: inputs peaking at $-1.59\text{ dBFS}$ clamped strictly to $-10.35\text{ dBFS}$ with $-8.77\text{ dB}$ gain reduction)
+* [ ] Formal WDK `InfVerif.exe /u` validation (Requires Windows Driver Kit)
 * [ ] Test another USB device (Community testing welcome!)
 * [ ] Test Bluetooth (Community testing welcome!)
 * [ ] Test built-in audio (Community testing welcome!)
 * [ ] Clean Windows 11 test
-* [ ] No `DisableProtectedAudioDG` requirement *(Pending Phase B Microsoft Signing)*
-* [ ] Secure Boot ON compatibility *(Pending Phase B Microsoft Signing)*
+* [ ] No `DisableProtectedAudioDG` requirement *(Requires Phase B Microsoft HLK Certification)*
+* [ ] Secure Boot ON compatibility *(Requires Phase B Microsoft HLK Certification)*
 
-#### 🔑 Phase B — Microsoft Signing
+#### 🔑 Phase B — Microsoft Signing & HLK Certification
 * [ ] Create Hardware Dev Center / Partner Center account
-* [ ] Get required certificate (EV Code Signing)
-* [ ] Submit package
-* [ ] Microsoft signs it (Attestation / WHQL)
-* [ ] Download signed package
-* [ ] Install on clean Windows 11
-* [ ] Verify APO loads normally in `audiodg.exe` with full PPL protection
+* [ ] Obtain required EV Code Signing Certificate
+* [ ] Set up Windows Hardware Lab Kit (HLK) test environment
+* [ ] Pass WHCP Audio Processing Object HLK test playlist
+* [ ] Submit HLK package to Microsoft Partner Center
+* [ ] Microsoft signs package with protected environment attribute (`PETrust`)
+* [ ] Verify APO loads normally in `audiodg.exe` under full PPL protection (`DisableProtectedAudioDG=0`)
 * [ ] Verify Secure Boot remains ON
 
 ---
