@@ -8,6 +8,9 @@ dist-standalone/
 *.suo
 *.userosscache
 *.sln.docstates
+*.obj
+*.exp
+*.lib
 
 # Node & UI
 node_modules/
