@@ -72,7 +72,6 @@ public class DashboardForm : Form
     private Panel _settingsCard = null!;
     private Label _deviceInfoLabel = null!;
     private CheckBox _chkAllDevices = null!;
-    private CheckBox _chkAppMixer = null!;
     private CheckBox _chkStartup = null!;
 
     private bool _isUpdatingUi = false;
@@ -329,45 +328,12 @@ public class DashboardForm : Form
             AutoEllipsis = true
         };
 
-        _chkAllDevices = new CheckBox
-        {
-            Text = "Multi-Device Protection (All outputs)",
-            Font = new Font("Segoe UI", 8.5f, FontStyle.Regular),
-            ForeColor = _textWhite,
-            Location = new Point(14, 36),
-            Size = new Size(360, 24),
-            Checked = _config.Settings.ApplyToAllDevices,
-            Cursor = Cursors.Hand
-        };
-        _chkAllDevices.CheckedChanged += (s, e) =>
-        {
-            _config.Settings.ApplyToAllDevices = _chkAllDevices.Checked;
-            _config.Save();
-            _engine.EnforceVolumeCeiling();
-        };
-
-        _chkAppMixer = new CheckBox
-        {
-            Text = "App Sound Mixer Guard (Level Games/Apps)",
-            Font = new Font("Segoe UI", 8.5f, FontStyle.Regular),
-            ForeColor = _textWhite,
-            Location = new Point(14, 64),
-            Size = new Size(360, 24),
-            Checked = _config.Settings.AppMixerGuardEnabled,
-            Cursor = Cursors.Hand
-        };
-        _chkAppMixer.CheckedChanged += (s, e) =>
-        {
-            _config.Settings.AppMixerGuardEnabled = _chkAppMixer.Checked;
-            _config.Save();
-        };
-
         _chkStartup = new CheckBox
         {
             Text = "Start with Windows on Login",
             Font = new Font("Segoe UI", 8.5f, FontStyle.Regular),
             ForeColor = _textWhite,
-            Location = new Point(14, 92),
+            Location = new Point(14, 36),
             Size = new Size(360, 24),
             Checked = StartupManager.IsStartupEnabled(),
             Cursor = Cursors.Hand
@@ -379,19 +345,35 @@ public class DashboardForm : Form
             _config.Save();
         };
 
+        _chkAllDevices = new CheckBox
+        {
+            Text = "Multi-Device Protection (All outputs)",
+            Font = new Font("Segoe UI", 8.5f, FontStyle.Regular),
+            ForeColor = _textWhite,
+            Location = new Point(14, 64),
+            Size = new Size(360, 24),
+            Checked = _config.Settings.ApplyToAllDevices,
+            Cursor = Cursors.Hand
+        };
+        _chkAllDevices.CheckedChanged += (s, e) =>
+        {
+            _config.Settings.ApplyToAllDevices = _chkAllDevices.Checked;
+            _config.Save();
+            _engine.EnforceVolumeCeiling();
+        };
+
         var hintLabel = new Label
         {
-            Text = "💡 Windows audio stays at 100%. Limiter clamps peaks in 10ms.",
+            Text = "💡 Windows audio stays at 100%. The 10ms Master Limiter automatically prevents hearing damage without altering individual app volume levels or microphones.",
             Font = new Font("Segoe UI", 8.0f, FontStyle.Italic),
             ForeColor = _textMuted,
-            Location = new Point(12, 126),
-            Size = new Size(368, 30)
+            Location = new Point(12, 100),
+            Size = new Size(368, 56)
         };
 
         _settingsCard.Controls.Add(_deviceInfoLabel);
-        _settingsCard.Controls.Add(_chkAllDevices);
-        _settingsCard.Controls.Add(_chkAppMixer);
         _settingsCard.Controls.Add(_chkStartup);
+        _settingsCard.Controls.Add(_chkAllDevices);
         _settingsCard.Controls.Add(hintLabel);
         this.Controls.Add(_settingsCard);
 

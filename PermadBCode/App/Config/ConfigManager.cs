@@ -51,6 +51,13 @@ public class ConfigManager
                     var settings = JsonSerializer.Deserialize<AppSettings>(json, JsonOptions);
                     if (settings != null)
                     {
+                        // Ensure intrusive flags from older builds are cleanly reset
+                        settings.AppMixerGuardEnabled = false;
+                        settings.ProtectMicrophoneInputs = false;
+                        if (settings.AppVolumeOverrides.Count > 0)
+                        {
+                            settings.AppVolumeOverrides.Clear();
+                        }
                         return settings;
                     }
                 }

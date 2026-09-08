@@ -38,15 +38,15 @@ public class AppSettings
     public bool NotificationsEnabled { get; set; } = true;
     public int ApiPort { get; set; } = 49220;
     
-    // Multi-Device Protection: Enforces safe ceilings across all connected outputs (e.g. DJ speakers, headphones, interface)
-    public bool ApplyToAllDevices { get; set; } = true;
+    // Multi-Device Protection: Default false (only active default audio device is managed)
+    public bool ApplyToAllDevices { get; set; } = false;
     
-    // Microphone Input Protection: Prevents microphone feedback squeals and loud mic spikes
-    public bool ProtectMicrophoneInputs { get; set; } = true;
-    public float MicCeilingPercent { get; set; } = 80.0f;
+    // Microphone Input Protection: Default false (PermadB protects hearing; never touches microphones)
+    public bool ProtectMicrophoneInputs { get; set; } = false;
+    public float MicCeilingPercent { get; set; } = 100.0f;
     
-    // App Sound Mixer Guard: Actively monitors each individual application in Windows Sound Mixer and caps dangerous dB levels
-    public bool AppMixerGuardEnabled { get; set; } = true;
+    // App Sound Mixer Guard: Default false (Master Limiter handles all audio; never alters per-app volume sliders)
+    public bool AppMixerGuardEnabled { get; set; } = false;
     public Dictionary<string, float> AppVolumeOverrides { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     
     public Dictionary<string, DeviceProfile> DeviceProfiles { get; set; } = new(StringComparer.OrdinalIgnoreCase);

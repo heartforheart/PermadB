@@ -378,6 +378,10 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                 Console.WriteLine($"[AudioEngine] Active Device: {friendlyName} ({profile.DeviceType})");
                 UpdateCachedProfile(profile);
                 InternalEnforceCeiling();
+
+                // Restore any apps (e.g. System Sounds, NVIDIA Container) or mics ducked by older builds back to 100%
+                RestoreClampedAppVolumes();
+                RestoreMicrophoneVolumes();
             }
         }
         catch (Exception ex)
@@ -431,63 +435,14 @@ public class AudioEngine : IMMNotificationClient, IDisposable
     {
         if (!_config.Settings.Enabled) return;
 
-        int count = 0;
-
-        // 1. Enforce on Default Active Device (Ensure baseline is 100%)
+        // Maintain 100% volume only on the active default audio device
         if (_activeDevice != null)
         {
-            EnforceDeviceCeiling(_activeDevice, isDefault: true);
-            count++;
+            EnforceDeviceCeiling(_activeDevice);
         }
-
-        // 2. Multi-Device Enforcer: If ApplyToAllDevices is enabled, maintain baseline on ALL active playback endpoints!
-        if (_config.Settings.ApplyToAllDevices && _enumerator != null)
-        {
-            try
-            {
-                var endpoints = _enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active);
-                foreach (var ep in endpoints)
-                {
-                    if (_activeDevice != null && ep.ID == _activeDevice.ID) continue;
-                    EnforceDeviceCeiling(ep, isDefault: false);
-                    count++;
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[AudioEngine] Error enforcing all-devices ceiling: {ex.Message}");
-            }
-        }
-
-        // 3. Microphone Input Protection (Capture endpoints)
-        if (_config.Settings.ProtectMicrophoneInputs && _enumerator != null)
-        {
-            try
-            {
-                var captureEndpoints = _enumerator.EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active);
-                var micCap = Math.Clamp(_config.Settings.MicCeilingPercent, 10.0f, 100.0f) / 100.0f;
-                foreach (var cap in captureEndpoints)
-                {
-                    try
-                    {
-                        var vol = cap.AudioEndpointVolume;
-                        if (vol.MasterVolumeLevelScalar > micCap)
-                        {
-                            vol.MasterVolumeLevelScalar = micCap;
-                            Console.WriteLine($"[AudioEngine] Microphone input capped to {micCap * 100:F0}% on {cap.FriendlyName}");
-                        }
-                        count++;
-                    }
-                    catch { }
-                }
-            }
-            catch { }
-        }
-
-        _cachedProtectedCount = Math.Max(1, count);
     }
 
-    private void EnforceDeviceCeiling(MMDevice device, bool isDefault)
+    private void EnforceDeviceCeiling(MMDevice device)
     {
         try
         {
@@ -497,16 +452,16 @@ public class AudioEngine : IMMNotificationClient, IDisposable
             var currentVol = device.AudioEndpointVolume.MasterVolumeLevelScalar;
             if (currentVol < 0.99f && !_isCurrentlyClamping)
             {
-                if (isDefault) _isAdjustingVolume = true;
+                _isAdjustingVolume = true;
                 try
                 {
                     device.AudioEndpointVolume.MasterVolumeLevelScalar = 1.0f;
-                    if (isDefault) _userBaselineVolume = 1.0f;
+                    _userBaselineVolume = 1.0f;
                     Console.WriteLine($"[AudioEngine] Master volume on '{device.FriendlyName}' maintained at 100%.");
                 }
                 finally
                 {
-                    if (isDefault) _isAdjustingVolume = false;
+                    _isAdjustingVolume = false;
                 }
             }
         }
@@ -514,6 +469,73 @@ public class AudioEngine : IMMNotificationClient, IDisposable
         {
             Console.WriteLine($"[AudioEngine] Ceiling enforcement error on {device.FriendlyName}: {ex.Message}");
         }
+    }
+
+    private void RestoreClampedAppVolumes()
+    {
+        if (_enumerator == null) return;
+        try
+        {
+            var endpoints = _enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active);
+            foreach (var ep in endpoints)
+            {
+                try
+                {
+                    var sessionManager = ep.AudioSessionManager;
+                    sessionManager.RefreshSessions();
+                    var sessions = sessionManager.Sessions;
+                    for (int i = 0; i < sessions.Count; i++)
+                    {
+                        var s = sessions[i];
+                        var pid = (int)s.GetProcessID;
+                        string procName = "System Sounds";
+                        if (pid > 0 && _processNameCache.TryGetValue(pid, out var cachedName))
+                        {
+                            procName = cachedName;
+                        }
+                        else if (pid > 0)
+                        {
+                            try { procName = Process.GetProcessById(pid).ProcessName; } catch { }
+                        }
+
+                        // If System Sounds, NVIDIA Container, or any app was previously ducked below 100%, restore it to 100%
+                        if (s.SimpleAudioVolume.Volume < 0.99f)
+                        {
+                            s.SimpleAudioVolume.Volume = 1.0f;
+                            Console.WriteLine($"[AudioEngine] Restored '{procName}' on '{ep.FriendlyName}' in Windows Sound Mixer back to 100%.");
+                        }
+                    }
+                }
+                catch { }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[AudioEngine] RestoreClampedAppVolumes error: {ex.Message}");
+        }
+    }
+
+    private void RestoreMicrophoneVolumes()
+    {
+        if (_enumerator == null) return;
+        try
+        {
+            var captureEndpoints = _enumerator.EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active);
+            foreach (var cap in captureEndpoints)
+            {
+                try
+                {
+                    // If mic was capped to ~80% (0.78f - 0.82f) by previous version, restore it to 100% (1.0f)
+                    if (cap.AudioEndpointVolume.MasterVolumeLevelScalar >= 0.78f && cap.AudioEndpointVolume.MasterVolumeLevelScalar <= 0.82f)
+                    {
+                        cap.AudioEndpointVolume.MasterVolumeLevelScalar = 1.0f;
+                        Console.WriteLine($"[AudioEngine] Restored microphone '{cap.FriendlyName}' volume back to 100%.");
+                    }
+                }
+                catch { }
+            }
+        }
+        catch { }
     }
 
     private void InternalPollMeter()
@@ -692,15 +714,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                     bool isAppClamped = false;
                     bool isAppUnsafe = false;
 
-                    // Update baseline volume when the app is quiet / normal and not clamped
-                    if (!_appLastClampTime.TryGetValue(procName, out var lastClamp) || 
-                        (DateTime.UtcNow - lastClamp).TotalSeconds > 4.0)
-                    {
-                        // Store the user's intended normal volume for this app
-                        _appBaselineVolume[procName] = appVol;
-                    }
-
-                    // 1. Check user-defined manual cap for this application
+                    // 1. Check user-defined manual cap for this application (if any)
                     if (_config.Settings.AppVolumeOverrides.TryGetValue(procName, out var userCapPercent))
                     {
                         var userCapScalar = Math.Clamp(userCapPercent / 100.0f, 0.0f, 1.0f);
@@ -711,46 +725,16 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                             isAppClamped = true;
                         }
                     }
-                    // 2. Active App Sound Mixer Guard: Automatically level games outputting dangerous uncompressed dB (e.g. CS2 volume 1)
-                    // Note: VoIP communication apps (Discord, Teams, Zoom, etc.) are excluded so user mixer levels are never altered
-                    else if (_config.Settings.Enabled && _config.Settings.AppMixerGuardEnabled && !isVoip)
+                    // 2. Proactively restore System Sounds and NVIDIA Container to 100% if ducked by older versions
+                    else if (string.Equals(procName, "System Sounds", StringComparison.OrdinalIgnoreCase) ||
+                             procName.Contains("nvcontainer", StringComparison.OrdinalIgnoreCase) ||
+                             procName.Contains("nvidia", StringComparison.OrdinalIgnoreCase))
                     {
-                        // For Games & Media (CS2, browsers, media players, etc.):
-                        // Clamp if continuous sound exceeds the active profile's safe target (e.g. > 75 dBA continuous)
-                        var safeTargetContinuous = profile.TargetSafeDbSpl;
-
-                        if (appEstContinuousSpl > safeTargetContinuous + 0.5f && appPeakDbfs > -15.0f)
+                        if (appVol < 0.99f)
                         {
-                            isAppUnsafe = true;
-                            _appLastClampTime[procName] = DateTime.UtcNow;
-
-                            var overshootDb = appEstContinuousSpl - safeTargetContinuous;
-                            var baseVol = _appBaselineVolume.GetValueOrDefault(procName, 1.0f);
-
-                            // Calculate target safe volume directly from baseline so it exactly hits safe target dB
-                            var safeScalar = (float)Math.Pow(10, -Math.Min(overshootDb, 16.0f) / 20.0);
-                            var targetSafeVol = Math.Clamp(baseVol * safeScalar, 0.25f, 1.0f);
-
-                            if (appVol > targetSafeVol + 0.02f)
-                            {
-                                s.SimpleAudioVolume.Volume = targetSafeVol;
-                                appVol = targetSafeVol;
-                                isAppClamped = true;
-                                _spikesClampedCount++;
-                                Console.WriteLine($"[AudioEngine] 🛡️ App Sound Mixer Guard leveled '{procName}' ({appEstContinuousSpl:F1} dBA) down to safe {targetSafeVol * 100:F0}%");
-                            }
-                        }
-                        // Auto-recovery: When the game is no longer blasting loud audio for > 3.0 seconds, gently restore back toward baseline
-                        else if (_appLastClampTime.TryGetValue(procName, out var clampTime) && 
-                                 (DateTime.UtcNow - clampTime).TotalSeconds > 3.0)
-                        {
-                            var baseVol = _appBaselineVolume.GetValueOrDefault(procName, 1.0f);
-                            if (appVol < baseVol - 0.04f)
-                            {
-                                var recoveredVol = Math.Min(baseVol, appVol + 0.04f);
-                                s.SimpleAudioVolume.Volume = recoveredVol;
-                                appVol = recoveredVol;
-                            }
+                            s.SimpleAudioVolume.Volume = 1.0f;
+                            appVol = 1.0f;
+                            Console.WriteLine($"[AudioEngine] Restored '{procName}' back to 100% in Windows Sound Mixer.");
                         }
                     }
 
@@ -764,7 +748,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                         PeakDbfs = (float)Math.Round(appPeakDbfs, 1),
                         EstimatedDbSpl = (float)Math.Round(appEstContinuousSpl, 1),
                         IsMuted = appMute,
-                        IsClamped = isAppClamped || (_appLastClampTime.TryGetValue(procName, out var ct) && (DateTime.UtcNow - ct).TotalSeconds < 2.5),
+                        IsClamped = isAppClamped,
                         IsUnsafe = isAppUnsafe
                     });
                 }

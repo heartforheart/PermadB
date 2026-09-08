@@ -24,7 +24,6 @@ public class TrayIconManager : IDisposable
     private ToolStripMenuItem _customPresetItem = null!;
     private ToolStripMenuItem _strictLockItem = null!;
     private ToolStripMenuItem _allDevicesItem = null!;
-    private ToolStripMenuItem _appMixerGuardItem = null!;
     private ToolStripMenuItem _startupItem = null!;
 
     public event Action? OnOpenDashboardRequested;
@@ -182,22 +181,6 @@ public class TrayIconManager : IDisposable
         });
         _contextMenu.Items.Add(_allDevicesItem);
 
-        // App Sound Mixer Guard (Level Games & Apps)
-        _appMixerGuardItem = new ToolStripMenuItem("🎮 App Sound Mixer Guard (Level Games/Apps)", null, (s, e) =>
-        {
-            _config.Settings.AppMixerGuardEnabled = !_config.Settings.AppMixerGuardEnabled;
-            _config.Save();
-            if (_config.Settings.AppMixerGuardEnabled)
-            {
-                ShowNotification("App Mixer Guard Active", "Games and apps in Windows Sound Mixer are actively leveled under safe dB!");
-            }
-            else
-            {
-                ShowNotification("App Mixer Guard Paused", "Individual app volume leveling is paused.");
-            }
-            UpdateTrayAppearance();
-        });
-        _contextMenu.Items.Add(_appMixerGuardItem);
 
         // Start with Windows
         _startupItem = new ToolStripMenuItem("Start with Windows", null, (s, e) =>
@@ -270,7 +253,6 @@ public class TrayIconManager : IDisposable
 
             _strictLockItem.Checked = _config.Settings.StrictVolumeLock;
             _allDevicesItem.Checked = _config.Settings.ApplyToAllDevices;
-            _appMixerGuardItem.Checked = _config.Settings.AppMixerGuardEnabled;
             _startupItem.Checked = StartupManager.IsStartupEnabled();
 
             // Tooltip text (max 63 chars for Windows NotifyIcon compatibility)
