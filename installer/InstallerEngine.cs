@@ -3,6 +3,8 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Reflection;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text.RegularExpressions;
 using Microsoft.Win32;
 
@@ -220,6 +222,27 @@ public static class InstallerEngine
 
         try
         {
+            // 1. Grant BUILTIN\Users permission to create/set keys in MMDevices\Audio\Render
+            // so PermadB can dynamically bind new audio devices at runtime without UAC prompts
+            try
+            {
+                using var renderAclKey = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render",
+                    RegistryKeyPermissionCheck.ReadWriteSubTree, RegistryRights.ChangePermissions | RegistryRights.ReadKey | RegistryRights.SetValue);
+                if (renderAclKey != null)
+                {
+                    var acl = renderAclKey.GetAccessControl();
+                    var rule = new RegistryAccessRule(
+                        new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null),
+                        RegistryRights.SetValue | RegistryRights.CreateSubKey | RegistryRights.QueryValues | RegistryRights.ReadKey,
+                        InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+                        PropagationFlags.None,
+                        AccessControlType.Allow);
+                    acl.AddAccessRule(rule);
+                    renderAclKey.SetAccessControl(acl);
+                }
+            }
+            catch { }
+
             using var renderKey = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render");
             if (renderKey == null) return;
 
@@ -228,34 +251,27 @@ public static class InstallerEngine
             {
                 try
                 {
-                    using var devKey = renderKey.OpenSubKey(deviceId);
-                    if (devKey == null) continue;
-
-                    var stateVal = devKey.GetValue("DeviceState");
-                    // DeviceState == 1 indicates active render device
-                    if (stateVal is int state && state == 1)
+                    var fxSubPath = $@"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render\{deviceId}\FxProperties";
+                    RegistryKey? fxKey = null;
+                    try
                     {
-                        var fxSubPath = $@"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render\{deviceId}\FxProperties";
-                        RegistryKey? fxKey = null;
+                        fxKey = Registry.LocalMachine.OpenSubKey(
+                            fxSubPath,
+                            RegistryKeyPermissionCheck.ReadWriteSubTree,
+                            RegistryRights.SetValue | RegistryRights.QueryValues);
+                    }
+                    catch
+                    {
                         try
                         {
-                            fxKey = Registry.LocalMachine.OpenSubKey(
-                                fxSubPath,
-                                RegistryKeyPermissionCheck.ReadWriteSubTree,
-                                System.Security.AccessControl.RegistryRights.SetValue | System.Security.AccessControl.RegistryRights.QueryValues);
+                            fxKey = Registry.LocalMachine.CreateSubKey(fxSubPath, true);
                         }
-                        catch
-                        {
-                            try
-                            {
-                                fxKey = Registry.LocalMachine.CreateSubKey(fxSubPath, true);
-                            }
-                            catch { }
-                        }
+                        catch { }
+                    }
 
-                        if (fxKey != null)
-                        {
-                            using (fxKey)
+                    if (fxKey != null)
+                    {
+                        using (fxKey)
                             {
                                 // 1. Preserve and configure PKEY_FX_EndpointEffectClsid (,7)
                                 var existingEfx = fxKey.GetValue(pkeyEfx) as string;
@@ -313,7 +329,6 @@ public static class InstallerEngine
                                 fxKey.SetValue("PermadB_Installed_DeviceId", deviceId, RegistryValueKind.String);
                             }
                         }
-                    }
                 }
                 catch (Exception ex)
                 {

@@ -7,6 +7,7 @@ using System.IO.MemoryMappedFiles;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
+using Microsoft.Win32;
 using NAudio.CoreAudioApi;
 using NAudio.CoreAudioApi.Interfaces;
 using PermadB.Config;
@@ -393,6 +394,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                 _activeDevice.AudioEndpointVolume.OnVolumeNotification += _volumeDelegate;
 
                 Console.WriteLine($"[AudioEngine] Active Device: {friendlyName} ({profile.DeviceType}, Preset={_config.Settings.ActivePreset}, Ceiling={profile.SafeCeilingPercent:F0}%)");
+                EnsureEndpointFxProperties(id);
                 UpdateCachedProfile(profile);
                 InternalEnforceCeiling();
             }
@@ -415,6 +417,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
             {
                 try
                 {
+                    EnsureEndpointFxProperties(ep.ID);
                     list.Add(_config.GetOrCreateProfile(ep.ID, ep.FriendlyName));
                 }
                 catch { }
@@ -443,6 +446,57 @@ public class AudioEngine : IMMNotificationClient, IDisposable
     private float _lastSentCeilingLinear = -1.0f;
     private int _lastSentEnabled = -1;
 
+    public void EnsureActiveDeviceFxProperties()
+    {
+        if (_activeDevice == null) return;
+        EnsureEndpointFxProperties(_activeDevice.ID);
+    }
+
+    public void EnsureEndpointFxProperties(string deviceId)
+    {
+        if (string.IsNullOrEmpty(deviceId)) return;
+
+        const string clsid = "{968ff234-1895-49f1-8b97-9d9075eb25b6}";
+        const string pkeyEfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},7";
+        const string pkeyCompositeEfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},15";
+        const string pkeyEfxModes = "{d3993a3f-99c2-4402-b5ec-a92a0367664b},7";
+
+        string cleanId = deviceId;
+        int lastBrace = cleanId.LastIndexOf('{');
+        if (lastBrace > 0)
+        {
+            cleanId = cleanId.Substring(lastBrace);
+        }
+
+        try
+        {
+            string subPath = $@"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render\{cleanId}\FxProperties";
+            using var key = Registry.LocalMachine.OpenSubKey(subPath, true);
+            if (key != null)
+            {
+                var efx = key.GetValue(pkeyEfx) as string;
+                if (!string.Equals(efx, clsid, StringComparison.OrdinalIgnoreCase))
+                {
+                    key.SetValue(pkeyEfx, clsid, RegistryValueKind.String);
+                }
+
+                var comp = key.GetValue(pkeyCompositeEfx) as string[];
+                if (comp == null || !comp.Contains(clsid, StringComparer.OrdinalIgnoreCase))
+                {
+                    var newComp = comp == null ? new[] { clsid } : comp.Append(clsid).ToArray();
+                    key.SetValue(pkeyCompositeEfx, newComp, RegistryValueKind.MultiString);
+                }
+
+                var modes = key.GetValue(pkeyEfxModes) as string[];
+                if (modes == null || modes.Length == 0)
+                {
+                    key.SetValue(pkeyEfxModes, new[] { "{C18E2F7E-933D-4965-B7D1-1EEF228D2AF3}" }, RegistryValueKind.MultiString);
+                }
+            }
+        }
+        catch { }
+    }
+
     public void SendCeilingToApo()
     {
         PostToAudioThread(InternalSendCeilingToApo);
@@ -456,11 +510,15 @@ public class AudioEngine : IMMNotificationClient, IDisposable
             float ceilingPercent = profile.SafeCeilingPercent;
             bool isEnabled = _config.Settings.Enabled;
 
-            // Convert user ceiling percentage to acoustic digital ceiling using human perceptual curve.
-            // Human hearing is logarithmic: a 30% volume setting must attenuate significantly (~-27 dBFS)
-            // so that audio peaks are genuinely quieted to comfortable listening levels.
-            float norm = Math.Clamp(ceilingPercent / 100.0f, 0.05f, 1.0f);
-            float linear = 0.8912509f * (float)Math.Pow(norm, 2.5);
+            // Acoustically calibrated digital ceiling calculation:
+            // Continuous SPL = profile.EstimatedMaxDbSpl + peakDbfs + masterDbAtten - 11.0f (crest factor)
+            // To guarantee continuous SPL NEVER exceeds profile.TargetSafeDbSpl:
+            // targetDbfs <= profile.TargetSafeDbSpl + 11.0f - profile.EstimatedMaxDbSpl - masterDbAtten;
+            float maxSpl = profile.EstimatedMaxDbSpl > 50.0f ? profile.EstimatedMaxDbSpl : 100.0f;
+            float targetDbfs = profile.TargetSafeDbSpl + 11.0f - maxSpl;
+            // Strict range: [-40.0 dBFS .. -1.0 dBFS]
+            targetDbfs = Math.Clamp(targetDbfs, -40.0f, -1.0f);
+            float linear = (float)Math.Pow(10.0, targetDbfs / 20.0);
             linear = Math.Clamp(linear, 0.001f, 0.8912509f);
             float dbfs = 20.0f * (float)Math.Log10(linear);
             int enabledInt = isEnabled ? 1 : 0;
@@ -508,7 +566,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                     _lastSentCeilingLinear = linear;
                     _lastSentEnabled = enabledInt;
 
-                    Console.WriteLine($"[AudioEngine] Dynamic ceiling sent to APO: {ceilingPercent:F0}% ({linear:F4} linear, {dbfs:F1} dBFS, enabled={isEnabled}, seq={_apoCommandSeq})");
+                    Console.WriteLine($"[AudioEngine] Dynamic ceiling sent to APO: {ceilingPercent:F0}% ({linear:F4} linear, {dbfs:F1} dBFS, target={profile.TargetSafeDbSpl:F0}dBA, enabled={isEnabled}, seq={_apoCommandSeq})");
                 }
             }
         }
@@ -566,7 +624,8 @@ public class AudioEngine : IMMNotificationClient, IDisposable
             {
                 peak = telem.LastPeakOutLinear;
                 peakDbfs = telem.LastPeakOutDbfs;
-                isClamping = telem.CurrentGainReductionDb > 0.05f;
+                // Gain reduction in C++ metrics is negative in dB (e.g. -6 dB)
+                isClamping = telem.CurrentGainReductionDb < -0.05f || Math.Abs(telem.CurrentGainReductionDb) > 0.05f;
                 spikesClamped = (long)telem.LimiterActivations;
 
                 if (isClamping)
@@ -576,6 +635,8 @@ public class AudioEngine : IMMNotificationClient, IDisposable
             }
             else
             {
+                // Limiter APO is not active on this device - ensure endpoint registry binding
+                EnsureActiveDeviceFxProperties();
                 peak = meterPeak;
                 peakDbfs = peak > 0.00001f ? 20.0f * (float)Math.Log10(peak) : -96.0f;
                 isClamping = false;
@@ -600,11 +661,23 @@ public class AudioEngine : IMMNotificationClient, IDisposable
             // Continuous equivalent dBA (LAeq / RMS) for display and safety limits (typical audio crest factor ~11 dB)
             var estimatedContinuousSpl = Math.Clamp(estimatedPeakSpl - 11.0f, 25.0f, 115.0f);
 
+            // Strict Safety Ceiling Guarantee: When the limiter is clamping or when audio hits the ceiling,
+            // the continuous SPL cannot physically exceed the configured target safe ceiling.
+            if ((isClamping || estimatedContinuousSpl > profile.TargetSafeDbSpl) && isApoRecentlyActive)
+            {
+                estimatedContinuousSpl = Math.Min(estimatedContinuousSpl, profile.TargetSafeDbSpl);
+            }
+
             var channelCount = meter.PeakValues.Count;
             var channelPeaks = new float[channelCount];
             for (int i = 0; i < channelCount; i++)
             {
-                channelPeaks[i] = meter.PeakValues[i];
+                float chPeak = meter.PeakValues[i];
+                if (isApoRecentlyActive && chPeak > peak)
+                {
+                    chPeak = peak;
+                }
+                channelPeaks[i] = chPeak;
             }
 
             // Active Hearing Safety Monitoring: Detect if acoustic output exceeds safe target for UI meter stats

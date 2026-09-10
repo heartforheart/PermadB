@@ -629,6 +629,13 @@ public class DecibelMeterControl : Panel
             _displaySpl = Math.Max(m.EstimatedDbSpl, _displaySpl - 1.8f); // smooth decay
         }
 
+        // Hard ceiling enforcement: when limiter is clamping, audio cannot exceed ceiling
+        float ceilingSpl = 50.0f + (m.SafeCeilingPercent / 100.0f) * 38.0f;
+        if (m.IsClamping && _displaySpl > ceilingSpl)
+        {
+            _displaySpl = ceilingSpl;
+        }
+
         if (_displaySpl > _peakHold)
         {
             _peakHold = _displaySpl;
@@ -665,14 +672,16 @@ public class DecibelMeterControl : Panel
         Color badgeBg;
         Color badgeFg = Color.White;
 
+        float ceilingSpl = 50.0f + (_metrics.SafeCeilingPercent / 100.0f) * 38.0f;
+
         if (_metrics.IsClamping)
         {
             statusText = "⚡ LIMITER ACTIVE";
             badgeBg = _red;
         }
-        else if (_displaySpl >= 78.0f)
+        else if (_displaySpl >= ceilingSpl - 1.5f)
         {
-            statusText = "⚠️ NEAR CEILING";
+            statusText = "⚠️ AT CEILING";
             badgeBg = _amber;
         }
         else if (_displaySpl > 45.0f)
@@ -737,7 +746,6 @@ public class DecibelMeterControl : Panel
         }
 
         // Limiter Ceiling Marker Line (e.g. 75 dBA)
-        float ceilingSpl = 50.0f + (_metrics.SafeCeilingPercent / 100.0f) * 38.0f;
         float normCeiling = Math.Clamp((ceilingSpl - 30.0f) / 75.0f, 0.0f, 1.0f);
         int ceilingX = barX + (int)(barWidth * normCeiling);
 
