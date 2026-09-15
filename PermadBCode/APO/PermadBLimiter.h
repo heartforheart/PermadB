@@ -14,12 +14,14 @@ public:
     {
         float ceilingDbfs;    // e.g. -1.0f dBFS
         float lookaheadMs;    // e.g. 5.0f ms
-        float releaseMs;      // e.g. 50.0f ms
+        float holdMs;         // e.g. 120.0f ms (hold period to eliminate pumping & bass distortion)
+        float releaseMs;      // e.g. 250.0f ms (smooth transparent broadcast-quality release)
 
         Config() :
             ceilingDbfs(-1.0f),
             lookaheadMs(5.0f),
-            releaseMs(50.0f)
+            holdMs(120.0f),
+            releaseMs(250.0f)
         {}
     };
 
@@ -69,6 +71,8 @@ private:
     float m_currentGain;
     float m_releaseCoeff;
     float m_attackCoeff;
+    uint32_t m_holdFramesTotal;
+    uint32_t m_holdFramesRemaining;
 
     // Metrics / Statistics
     float m_maxObservedInLinear;
@@ -102,6 +106,8 @@ public:
         m_currentGain(1.0f),
         m_releaseCoeff(0.0f),
         m_attackCoeff(0.0f),
+        m_holdFramesTotal(5760),
+        m_holdFramesRemaining(0),
         m_maxObservedInLinear(0.0f),
         m_maxObservedOutLinear(0.0f),
         m_minGainLinear(1.0f),
@@ -139,12 +145,17 @@ public:
         m_frameCounter = 0;
         m_currentGain = 1.0f;
 
+        // Hold frames: period to hold gain reduction steady before release
+        float holdSec = (m_config.holdMs > 0.0f ? m_config.holdMs : 120.0f) / 1000.0f;
+        m_holdFramesTotal = static_cast<uint32_t>(std::round(m_sampleRate * holdSec));
+        m_holdFramesRemaining = 0;
+
         // Release coefficient: 1-pole filter for exponential gain release
-        float releaseSec = (m_config.releaseMs > 0.0f ? m_config.releaseMs : 50.0f) / 1000.0f;
+        float releaseSec = (m_config.releaseMs > 0.0f ? m_config.releaseMs : 250.0f) / 1000.0f;
         m_releaseCoeff = std::exp(-1.0f / (m_sampleRate * releaseSec));
 
         // Attack coefficient: ramps gain smoothly down over lookahead duration
-        float attackSec = (m_config.lookaheadMs * 0.5f) / 1000.0f;
+        float attackSec = (m_config.lookaheadMs * 0.25f) / 1000.0f;
         if (attackSec < 0.0001f) attackSec = 0.0001f;
         m_attackCoeff = std::exp(-1.0f / (m_sampleRate * attackSec));
 
@@ -163,6 +174,7 @@ public:
         m_dequeCount = 0;
         m_frameCounter = 0;
         m_currentGain = 1.0f;
+        m_holdFramesRemaining = 0;
     }
 
     void ResetStats()
@@ -252,16 +264,30 @@ public:
                 targetGain = m_ceilingLinear / lookaheadPeak;
             }
 
-            // 4. Smooth gain envelope (Attack downwards, Release upwards)
+            // 4. Smooth gain envelope (Attack downwards, Hold, Release upwards)
             if (targetGain < m_currentGain)
             {
                 // Attack: smoothly pull gain down in advance of the peak
                 m_currentGain = m_currentGain * m_attackCoeff + targetGain * (1.0f - m_attackCoeff);
+                if (m_currentGain < targetGain)
+                    m_currentGain = targetGain;
+                m_holdFramesRemaining = m_holdFramesTotal; // Hold gain reduction steady
             }
             else
             {
-                // Release: smoothly recover gain back towards 1.0
-                m_currentGain = m_currentGain * m_releaseCoeff + targetGain * (1.0f - m_releaseCoeff);
+                // Audio peak is lower: check hold counter before releasing gain upwards
+                if (m_holdFramesRemaining > 0)
+                {
+                    m_holdFramesRemaining--;
+                    // Hold gain steady: prevents sub-cycle bass flutter and inter-word/beat pumping
+                }
+                else
+                {
+                    // Release: smoothly recover gain back towards 1.0
+                    m_currentGain = m_currentGain * m_releaseCoeff + 1.0f * (1.0f - m_releaseCoeff);
+                    if (m_currentGain > 1.0f)
+                        m_currentGain = 1.0f;
+                }
             }
 
             // 5. Read delayed sample from circular delay buffer
@@ -280,11 +306,12 @@ public:
             if (delayedPeak > 0.00001f && (delayedPeak * m_currentGain > m_ceilingLinear))
             {
                 m_currentGain = m_ceilingLinear / delayedPeak;
+                m_holdFramesRemaining = m_holdFramesTotal;
             }
 
+            // Track minimum gain observed (No per-sample spike counting to eliminate hardware overhead)
             if (m_currentGain < 0.9999f)
             {
-                m_limiterActivations++;
                 if (m_currentGain < m_minGainLinear)
                     m_minGainLinear = m_currentGain;
             }
@@ -328,7 +355,7 @@ public:
         m.currentGainLinear = m_currentGain;
         m.currentGainReductionDb = (m_currentGain < 0.9999f) ? LinearToDbfs(m_currentGain) : 0.0f;
         m.maxGainReductionDb = (m_minGainLinear < 0.9999f) ? LinearToDbfs(m_minGainLinear) : 0.0f;
-        m.limiterActivations = m_limiterActivations;
+        m.limiterActivations = 0;
         return m;
     }
 

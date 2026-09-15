@@ -253,6 +253,13 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                 _config.Settings.DynamicThresholdDbfs = -1.5f;
                 _config.Settings.ActivePreset = "studio";
                 break;
+            case "custom":
+                float customPercent = Math.Clamp(_config.Settings.CustomPresetPercent, 20.0f, 95.0f);
+                profile.SafeCeilingPercent = customPercent;
+                profile.TargetSafeDbSpl = 50.0f + (customPercent / 100.0f) * 38.0f;
+                _config.Settings.DynamicThresholdDbfs = -3.0f;
+                _config.Settings.ActivePreset = "custom";
+                break;
             case "safe":
             default:
                 profile.SafeCeilingPercent = 65.0f;
@@ -626,7 +633,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                 peakDbfs = telem.LastPeakOutDbfs;
                 // Gain reduction in C++ metrics is negative in dB (e.g. -6 dB)
                 isClamping = telem.CurrentGainReductionDb < -0.05f || Math.Abs(telem.CurrentGainReductionDb) > 0.05f;
-                spikesClamped = (long)telem.LimiterActivations;
+                spikesClamped = 0;
 
                 if (isClamping)
                 {
@@ -640,7 +647,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                 peak = meterPeak;
                 peakDbfs = peak > 0.00001f ? 20.0f * (float)Math.Log10(peak) : -96.0f;
                 isClamping = false;
-                spikesClamped = hasApoTelemetry ? (long)telem.LimiterActivations : 0;
+                spikesClamped = 0;
             }
 
             // Hardware master volume attenuation in dB

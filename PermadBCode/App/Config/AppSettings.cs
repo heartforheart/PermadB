@@ -28,6 +28,9 @@ public class AppSettings
     public bool StartWithWindows { get; set; } = true;
     public string ActivePreset { get; set; } = "safe"; // "safe", "night", "studio", "custom"
     
+    // User-saved single custom preset ceiling percentage (0 to 100)
+    public float CustomPresetPercent { get; set; } = 70.0f;
+    
     // Dynamic transient limiter (ducks sudden peaks like gunshots, ads, explosions)
     public bool DynamicLimiterEnabled { get; set; } = true;
     public float DynamicThresholdDbfs { get; set; } = -3.0f;

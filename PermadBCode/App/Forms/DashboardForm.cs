@@ -64,9 +64,11 @@ public class DashboardForm : Form
     private PresetCardControl _cardSafe = null!;
     private PresetCardControl _cardNight = null!;
     private PresetCardControl _cardStudio = null!;
+    private PresetCardControl _cardCustom = null!;
 
     private Panel _customCeilingCard = null!;
     private Label _customCeilingLabel = null!;
+    private Button _saveCustomButton = null!;
     private TrackBar _customCeilingSlider = null!;
 
     private Panel _settingsCard = null!;
@@ -238,40 +240,55 @@ public class DashboardForm : Form
 
         _cardSafe = new PresetCardControl(
             title: "Safe Ears",
-            ceilingText: "65% (75 dBA)",
-            tagText: "Recommended",
+            ceilingText: "65%",
+            tagText: "75 dB • Safe",
             onClick: () => ApplyPreset("safe")
         )
         {
             Location = new Point(0, 0),
-            Size = new Size(126, 94)
+            Size = new Size(92, 94)
         };
 
         _cardNight = new PresetCardControl(
-            title: "Night Mode",
-            ceilingText: "50% (68 dBA)",
-            tagText: "Relaxed",
+            title: "Night",
+            ceilingText: "50%",
+            tagText: "68 dB • Quiet",
             onClick: () => ApplyPreset("night")
         )
         {
-            Location = new Point(133, 0),
-            Size = new Size(126, 94)
+            Location = new Point(100, 0),
+            Size = new Size(92, 94)
         };
 
         _cardStudio = new PresetCardControl(
             title: "Studio",
-            ceilingText: "85% (82 dBA)",
-            tagText: "Dynamic",
+            ceilingText: "85%",
+            tagText: "82 dB • Loud",
             onClick: () => ApplyPreset("studio")
         )
         {
-            Location = new Point(266, 0),
-            Size = new Size(126, 94)
+            Location = new Point(200, 0),
+            Size = new Size(92, 94)
+        };
+
+        float initCustomVal = _config.Settings.CustomPresetPercent;
+        float initCustomSpl = 50.0f + (initCustomVal / 100.0f) * 38.0f;
+        _cardCustom = new PresetCardControl(
+            title: "Custom",
+            ceilingText: $"{initCustomVal:F0}%",
+            tagText: $"{initCustomSpl:F0} dB • Saved",
+            onClick: () => ApplyPreset("custom"),
+            onRightClick: () => SaveCurrentAsCustom()
+        )
+        {
+            Location = new Point(300, 0),
+            Size = new Size(92, 94)
         };
 
         _presetContainer.Controls.Add(_cardSafe);
         _presetContainer.Controls.Add(_cardNight);
         _presetContainer.Controls.Add(_cardStudio);
+        _presetContainer.Controls.Add(_cardCustom);
         this.Controls.Add(_presetContainer);
 
         // 5. Custom Limiter Ceiling Slider Card
@@ -292,6 +309,21 @@ public class DashboardForm : Form
             AutoSize = true
         };
 
+        _saveCustomButton = new Button
+        {
+            Text = "💾 Save Custom",
+            Font = new Font("Segoe UI", 7.5f, FontStyle.Bold),
+            Size = new Size(96, 22),
+            Location = new Point(286, 5),
+            FlatStyle = FlatStyle.Flat,
+            BackColor = Color.FromArgb(41, 55, 78),
+            ForeColor = _accentSky,
+            Cursor = Cursors.Hand
+        };
+        _saveCustomButton.FlatAppearance.BorderColor = _borderDark;
+        _saveCustomButton.FlatAppearance.BorderSize = 1;
+        _saveCustomButton.Click += (s, e) => SaveCurrentAsCustom();
+
         _customCeilingSlider = new TrackBar
         {
             Minimum = 30,
@@ -306,6 +338,7 @@ public class DashboardForm : Form
         _customCeilingSlider.Scroll += CustomCeilingSlider_Scroll;
 
         _customCeilingCard.Controls.Add(_customCeilingLabel);
+        _customCeilingCard.Controls.Add(_saveCustomButton);
         _customCeilingCard.Controls.Add(_customCeilingSlider);
         this.Controls.Add(_customCeilingCard);
 
@@ -479,16 +512,60 @@ public class DashboardForm : Form
         UpdatePresetCards();
     }
 
+    private void SaveCurrentAsCustom()
+    {
+        var percent = _customCeilingSlider.Value;
+        _config.Settings.CustomPresetPercent = percent;
+        _config.Settings.ActivePreset = "custom";
+        _config.Save();
+        _engine.ApplyPreset("custom");
+        UpdateCustomCardDisplay();
+        UpdatePresetCards();
+
+        if (_saveCustomButton != null)
+        {
+            _saveCustomButton.Text = "✓ Saved!";
+            _saveCustomButton.ForeColor = _accentGreen;
+            var timer = new System.Windows.Forms.Timer { Interval = 1500 };
+            timer.Tick += (s, e) =>
+            {
+                timer.Stop();
+                timer.Dispose();
+                if (!_saveCustomButton.IsDisposed)
+                {
+                    _saveCustomButton.Text = "💾 Save Custom";
+                    _saveCustomButton.ForeColor = _accentSky;
+                }
+            };
+            timer.Start();
+        }
+    }
+
+    private void UpdateCustomCardDisplay()
+    {
+        if (_cardCustom != null)
+        {
+            var customVal = _config.Settings.CustomPresetPercent;
+            var customSpl = 50.0f + (customVal / 100.0f) * 38.0f;
+            _cardCustom.CeilingText = $"{customVal:F0}%";
+            _cardCustom.TagText = $"{customSpl:F0} dB • Saved";
+        }
+    }
+
     private void UpdatePresetCards()
     {
         var preset = _config.Settings.ActivePreset;
         _cardSafe.IsActive = string.Equals(preset, "safe", StringComparison.OrdinalIgnoreCase);
         _cardNight.IsActive = string.Equals(preset, "night", StringComparison.OrdinalIgnoreCase);
         _cardStudio.IsActive = string.Equals(preset, "studio", StringComparison.OrdinalIgnoreCase);
+        _cardCustom.IsActive = string.Equals(preset, "custom", StringComparison.OrdinalIgnoreCase);
+
+        UpdateCustomCardDisplay();
 
         _cardSafe.Invalidate();
         _cardNight.Invalidate();
         _cardStudio.Invalidate();
+        _cardCustom.Invalidate();
     }
 
     private void RefreshLiveMetrics()
@@ -772,10 +849,6 @@ public class DecibelMeterControl : Panel
         int tagX = Math.Clamp(ceilingX - (int)(tagSize.Width / 2), 14, this.Width - (int)tagSize.Width - 14);
         using var brushSky = new SolidBrush(_sky);
         g.DrawString(ceilingTag, fontSub, brushSky, tagX, 76);
-
-        var clampStats = $"⚡ {_metrics.SpikesClampedTotal} spikes clamped";
-        var clampSize = g.MeasureString(clampStats, fontSub);
-        g.DrawString(clampStats, fontSub, brushMuted, this.Width - clampSize.Width - 14, 94);
     }
 }
 
@@ -797,6 +870,7 @@ public class PresetCardControl : Panel
     public bool IsActive { get; set; }
 
     private readonly Action _onClick;
+    private readonly Action? _onRightClick;
     private bool _isHovered = false;
 
     private readonly Color _bgCard = Color.FromArgb(30, 41, 59);
@@ -808,12 +882,13 @@ public class PresetCardControl : Panel
     private readonly Color _textMuted = Color.FromArgb(148, 163, 184);
     private readonly Color _sky = Color.FromArgb(56, 189, 248);
 
-    public PresetCardControl(string title, string ceilingText, string tagText, Action onClick)
+    public PresetCardControl(string title, string ceilingText, string tagText, Action onClick, Action? onRightClick = null)
     {
         Title = title;
         CeilingText = ceilingText;
         TagText = tagText;
         _onClick = onClick;
+        _onRightClick = onRightClick;
 
         this.DoubleBuffered = true;
         this.Cursor = Cursors.Hand;
@@ -822,9 +897,16 @@ public class PresetCardControl : Panel
         this.MouseLeave += (s, e) => { _isHovered = false; this.Invalidate(); };
         this.MouseUp += (s, e) =>
         {
-            if (e.Button == MouseButtons.Left && this.ClientRectangle.Contains(e.Location))
+            if (this.ClientRectangle.Contains(e.Location))
             {
-                _onClick();
+                if (e.Button == MouseButtons.Left)
+                {
+                    _onClick();
+                }
+                else if (e.Button == MouseButtons.Right && _onRightClick != null)
+                {
+                    _onRightClick();
+                }
             }
         };
     }
@@ -850,25 +932,25 @@ public class PresetCardControl : Panel
         }
 
         // Title
-        using var fontTitle = new Font("Segoe UI", 9.0f, FontStyle.Bold);
+        using var fontTitle = new Font("Segoe UI", 8.5f, FontStyle.Bold);
         using var brushTitle = new SolidBrush(_textWhite);
-        g.DrawString(Title, fontTitle, brushTitle, 8, 10);
+        g.DrawString(Title, fontTitle, brushTitle, 8, 8);
 
         // Active check badge
         if (IsActive)
         {
             using var fontCheck = new Font("Segoe UI", 8.0f, FontStyle.Bold);
             using var brushCheck = new SolidBrush(_borderActive);
-            g.DrawString("✓", fontCheck, brushCheck, this.Width - 18, 10);
+            g.DrawString("✓", fontCheck, brushCheck, this.Width - 18, 8);
         }
 
-        // Ceiling Text (e.g. 65% / 75 dBA)
-        using var fontCeiling = new Font("Segoe UI", 10.0f, FontStyle.Bold);
+        // Ceiling Text (e.g. 65%)
+        using var fontCeiling = new Font("Segoe UI", 12.0f, FontStyle.Bold);
         using var brushCeiling = new SolidBrush(IsActive ? _borderActive : _textWhite);
-        g.DrawString(CeilingText, fontCeiling, brushCeiling, 8, 32);
+        g.DrawString(CeilingText, fontCeiling, brushCeiling, 8, 30);
 
-        // Tag (Recommended / Relaxed / Dynamic)
-        using var fontTag = new Font("Segoe UI", 7.5f, FontStyle.Regular);
+        // Tag (Recommended / Relaxed / Dynamic / Saved)
+        using var fontTag = new Font("Segoe UI", 7.0f, FontStyle.Regular);
         using var brushTag = new SolidBrush(_textMuted);
         g.DrawString(TagText, fontTag, brushTag, 8, 62);
     }

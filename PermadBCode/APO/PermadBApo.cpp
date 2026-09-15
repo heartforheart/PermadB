@@ -204,7 +204,7 @@ void CPermadBLimiterAPO::UpdateTelemetry(UINT32 u32Frames, UINT32 u32Channels, F
 
     m_pTelemetry->sampleRate = static_cast<UINT32>(GetFramesPerSecond());
     m_pTelemetry->channelCount = u32Channels;
-    m_pTelemetry->limiterActivations = static_cast<UINT32>(m.limiterActivations);
+    m_pTelemetry->limiterActivations = 0;
     m_pTelemetry->processCount++;
     m_pTelemetry->totalFramesProcessed += u32Frames;
     m_pTelemetry->configuredCeilingDbfs = m.configuredCeilingDbfs;

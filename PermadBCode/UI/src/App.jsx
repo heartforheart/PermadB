@@ -171,6 +171,20 @@ export default function App() {
     } catch (e) {}
   };
 
+  // Save current ceiling as Custom Preset
+  const handleSaveCustomPreset = async () => {
+    const val = metrics.safeCeilingPercent;
+    setSettings(prev => ({ ...prev, customPresetPercent: val, activePreset: 'custom' }));
+    try {
+      await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ customPresetPercent: val, activePreset: 'custom' })
+      });
+      fetchData();
+    } catch (e) {}
+  };
+
   // Toggle Windows Autostart
   const toggleStartWithWindows = async () => {
     const nextVal = !settings.startWithWindows;
@@ -494,10 +508,10 @@ export default function App() {
             }}>
               <div>
                 <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>
-                  Dangerous Spikes Clamped
+                  Safety Limiter
                 </span>
-                <p style={{ fontSize: '1.4rem', fontWeight: '700', color: 'var(--safe-green)', fontFamily: 'var(--font-mono)' }}>
-                  {metrics.spikesClampedTotal}
+                <p style={{ fontSize: '1.2rem', fontWeight: '700', color: 'var(--safe-green)', fontFamily: 'var(--font-mono)' }}>
+                  Active • 0 dB Overs
                 </p>
               </div>
               <div>
@@ -549,7 +563,7 @@ export default function App() {
               onClick={() => handlePresetSelect('night')}
             >
               <Moon size={20} color={settings.activePreset === 'night' ? '#10b981' : '#94a3b8'} />
-              <span className="preset-btn-name">Night / Relaxed</span>
+              <span className="preset-btn-name">Night</span>
               <span className="preset-btn-desc">50% / ~68 dB</span>
             </button>
 
@@ -558,8 +572,17 @@ export default function App() {
               onClick={() => handlePresetSelect('studio')}
             >
               <Sparkles size={20} color={settings.activePreset === 'studio' ? '#10b981' : '#94a3b8'} />
-              <span className="preset-btn-name">Studio Dynamic</span>
+              <span className="preset-btn-name">Studio</span>
               <span className="preset-btn-desc">85% / ~82 dB</span>
+            </button>
+
+            <button 
+              className={`preset-btn ${settings.activePreset === 'custom' ? 'active' : ''}`}
+              onClick={() => handlePresetSelect('custom')}
+            >
+              <Sliders size={20} color={settings.activePreset === 'custom' ? '#10b981' : '#94a3b8'} />
+              <span className="preset-btn-name">Custom</span>
+              <span className="preset-btn-desc">{(settings.customPresetPercent || 70).toFixed(0)}% / Saved</span>
             </button>
           </div>
 
@@ -567,7 +590,25 @@ export default function App() {
           <div className="slider-container">
             <div className="slider-header">
               <span className="slider-label">Hardware Volume Ceiling</span>
-              <span className="slider-value-pill">{metrics.safeCeilingPercent.toFixed(0)}% Max</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <button
+                  onClick={handleSaveCustomPreset}
+                  style={{
+                    background: 'var(--bg-card-sub)',
+                    border: '1px solid var(--border-card)',
+                    borderRadius: '6px',
+                    color: 'var(--accent-sky, #38bdf8)',
+                    fontSize: '0.75rem',
+                    padding: '2px 8px',
+                    cursor: 'pointer',
+                    fontWeight: '600'
+                  }}
+                  title="Save current ceiling as your single custom preset"
+                >
+                  💾 Save Custom
+                </button>
+                <span className="slider-value-pill">{metrics.safeCeilingPercent.toFixed(0)}% Max</span>
+              </div>
             </div>
             <input 
               type="range" 

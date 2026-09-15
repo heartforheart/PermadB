@@ -129,6 +129,11 @@ public class ApiServer : IDisposable
                     _engine.SetSafeCeiling((float)ceilingProp.GetDouble());
                 }
 
+                if (incoming.TryGetProperty("customPresetPercent", out var customProp))
+                {
+                    _config.Settings.CustomPresetPercent = (float)customProp.GetDouble();
+                }
+
                 if (incoming.TryGetProperty("dynamicLimiterEnabled", out var dynProp))
                 {
                     _config.Settings.DynamicLimiterEnabled = dynProp.GetBoolean();

@@ -22,6 +22,7 @@ public class TrayIconManager : IDisposable
     private ToolStripMenuItem _nightPresetItem = null!;
     private ToolStripMenuItem _studioPresetItem = null!;
     private ToolStripMenuItem _customPresetItem = null!;
+    private ToolStripMenuItem _saveCustomItem = null!;
     private ToolStripMenuItem _strictLockItem = null!;
     private ToolStripMenuItem _allDevicesItem = null!;
     private ToolStripMenuItem _startupItem = null!;
@@ -128,10 +129,27 @@ public class TrayIconManager : IDisposable
         });
         _contextMenu.Items.Add(_studioPresetItem);
 
-        // Custom Quick Level
-        _customPresetItem = new ToolStripMenuItem("Set Custom Ceiling...");
-        AddCustomLevelSubmenu(_customPresetItem);
+        // Custom Preset (Single User Saved Ceiling)
+        float customPercent = _config.Settings.CustomPresetPercent;
+        float customSpl = 50.0f + (customPercent / 100.0f) * 38.0f;
+        _customPresetItem = new ToolStripMenuItem($"Custom Preset ({customPercent:F0}% Ceiling / {customSpl:F0} dBA)", null, (s, e) =>
+        {
+            _engine.ApplyPreset("custom");
+            UpdateTrayAppearance();
+            ShowNotification("Custom Preset Activated", $"Volume ceiling set to your saved preset ({_config.Settings.CustomPresetPercent:F0}%).");
+        });
         _contextMenu.Items.Add(_customPresetItem);
+
+        _saveCustomItem = new ToolStripMenuItem("💾 Save Current Ceiling as Custom", null, (s, e) =>
+        {
+            var profile = _engine.GetActiveProfile();
+            _config.Settings.CustomPresetPercent = profile.SafeCeilingPercent;
+            _config.Settings.ActivePreset = "custom";
+            _config.Save();
+            UpdateTrayAppearance();
+            ShowNotification("Custom Preset Saved", $"Saved {profile.SafeCeilingPercent:F0}% as your custom preset.");
+        });
+        _contextMenu.Items.Add(_saveCustomItem);
 
         _contextMenu.Items.Add(new ToolStripSeparator());
 
@@ -250,6 +268,11 @@ public class TrayIconManager : IDisposable
             _nightPresetItem.Checked = isEnabled && preset == "night";
             _studioPresetItem.Checked = isEnabled && preset == "studio";
             _customPresetItem.Checked = isEnabled && preset == "custom";
+
+            var customVal = _config.Settings.CustomPresetPercent;
+            var customSpl = 50.0f + (customVal / 100.0f) * 38.0f;
+            _customPresetItem.Text = $"Custom Preset ({customVal:F0}% Ceiling / {customSpl:F0} dBA)";
+            _saveCustomItem.Text = $"💾 Save Current Ceiling ({profile.SafeCeilingPercent:F0}%) as Custom";
 
             _strictLockItem.Checked = _config.Settings.StrictVolumeLock;
             _allDevicesItem.Checked = _config.Settings.ApplyToAllDevices;
