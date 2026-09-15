@@ -478,26 +478,41 @@ public class AudioEngine : IMMNotificationClient, IDisposable
         try
         {
             string subPath = $@"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render\{cleanId}\FxProperties";
-            using var key = Registry.LocalMachine.OpenSubKey(subPath, true);
+            RegistryKey? key = null;
+            try
+            {
+                key = Registry.LocalMachine.OpenSubKey(
+                    subPath,
+                    RegistryKeyPermissionCheck.ReadWriteSubTree,
+                    System.Security.AccessControl.RegistryRights.SetValue | System.Security.AccessControl.RegistryRights.QueryValues);
+            }
+            catch
+            {
+                try { key = Registry.LocalMachine.OpenSubKey(subPath, true); } catch { }
+            }
+
             if (key != null)
             {
-                var efx = key.GetValue(pkeyEfx) as string;
-                if (!string.Equals(efx, clsid, StringComparison.OrdinalIgnoreCase))
+                using (key)
                 {
-                    key.SetValue(pkeyEfx, clsid, RegistryValueKind.String);
-                }
+                    var efx = key.GetValue(pkeyEfx) as string;
+                    if (!string.Equals(efx, clsid, StringComparison.OrdinalIgnoreCase))
+                    {
+                        key.SetValue(pkeyEfx, clsid, RegistryValueKind.String);
+                    }
 
-                var comp = key.GetValue(pkeyCompositeEfx) as string[];
-                if (comp == null || !comp.Contains(clsid, StringComparer.OrdinalIgnoreCase))
-                {
-                    var newComp = comp == null ? new[] { clsid } : comp.Append(clsid).ToArray();
-                    key.SetValue(pkeyCompositeEfx, newComp, RegistryValueKind.MultiString);
-                }
+                    var comp = key.GetValue(pkeyCompositeEfx) as string[];
+                    if (comp == null || !comp.Contains(clsid, StringComparer.OrdinalIgnoreCase))
+                    {
+                        var newComp = comp == null ? new[] { clsid } : comp.Append(clsid).ToArray();
+                        key.SetValue(pkeyCompositeEfx, newComp, RegistryValueKind.MultiString);
+                    }
 
-                var modes = key.GetValue(pkeyEfxModes) as string[];
-                if (modes == null || modes.Length == 0)
-                {
-                    key.SetValue(pkeyEfxModes, new[] { "{C18E2F7E-933D-4965-B7D1-1EEF228D2AF3}" }, RegistryValueKind.MultiString);
+                    var modes = key.GetValue(pkeyEfxModes) as string[];
+                    if (modes == null || modes.Length == 0)
+                    {
+                        key.SetValue(pkeyEfxModes, new[] { "{C18E2F7E-933D-4965-B7D1-1EEF228D2AF3}" }, RegistryValueKind.MultiString);
+                    }
                 }
             }
         }
