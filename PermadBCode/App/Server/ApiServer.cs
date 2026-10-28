@@ -131,7 +131,7 @@ public class ApiServer : IDisposable
 
                 if (incoming.TryGetProperty("customPresetPercent", out var customProp))
                 {
-                    _config.Settings.CustomPresetPercent = (float)customProp.GetDouble();
+                    _config.Settings.CustomPresetPercent = Math.Clamp((float)customProp.GetDouble(), 10.0f, 100.0f);
                 }
 
                 if (incoming.TryGetProperty("dynamicLimiterEnabled", out var dynProp))

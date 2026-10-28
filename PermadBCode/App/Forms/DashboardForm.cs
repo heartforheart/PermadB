@@ -327,9 +327,9 @@ public class DashboardForm : Form
         _customCeilingSlider = new TrackBar
         {
             Minimum = 30,
-            Maximum = 95,
+            Maximum = 100,
             TickFrequency = 5,
-            Value = (int)Math.Clamp(_engine.GetActiveProfile().SafeCeilingPercent, 30, 95),
+            Value = (int)Math.Clamp(_engine.GetActiveProfile().SafeCeilingPercent, 30, 100),
             Location = new Point(8, 28),
             Size = new Size(374, 34),
             BackColor = _bgCard,
@@ -490,7 +490,7 @@ public class DashboardForm : Form
             _engine.ApplyPreset(preset);
             _lastKnownPreset = preset;
             var profile = _engine.GetActiveProfile();
-            int sliderVal = (int)Math.Clamp(profile.SafeCeilingPercent, 30, 95);
+            int sliderVal = (int)Math.Clamp(profile.SafeCeilingPercent, 30, 100);
             _customCeilingSlider.Value = sliderVal;
             _customCeilingLabel.Text = $"Custom Limiter Ceiling: {profile.SafeCeilingPercent:F0}% ({profile.TargetSafeDbSpl:F0} dBA)";
             UpdatePresetCards();
@@ -598,7 +598,7 @@ public class DashboardForm : Form
             _isUpdatingUi = true;
             try
             {
-                int targetVal = (int)Math.Clamp(profile.SafeCeilingPercent, 30, 95);
+                int targetVal = (int)Math.Clamp(profile.SafeCeilingPercent, 30, 100);
                 if (_customCeilingSlider.Value != targetVal)
                 {
                     _customCeilingSlider.Value = targetVal;

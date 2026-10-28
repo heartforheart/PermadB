@@ -254,7 +254,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                 _config.Settings.ActivePreset = "studio";
                 break;
             case "custom":
-                float customPercent = Math.Clamp(_config.Settings.CustomPresetPercent, 20.0f, 95.0f);
+                float customPercent = Math.Clamp(_config.Settings.CustomPresetPercent, 20.0f, 100.0f);
                 profile.SafeCeilingPercent = customPercent;
                 profile.TargetSafeDbSpl = 50.0f + (customPercent / 100.0f) * 38.0f;
                 _config.Settings.DynamicThresholdDbfs = -3.0f;

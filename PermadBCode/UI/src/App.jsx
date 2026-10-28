@@ -613,7 +613,7 @@ export default function App() {
             <input 
               type="range" 
               min="20" 
-              max="95" 
+              max="100" 
               value={metrics.safeCeilingPercent} 
               onChange={(e) => handleCeilingChange(e.target.value)}
             />
