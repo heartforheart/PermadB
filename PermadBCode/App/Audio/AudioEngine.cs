@@ -340,7 +340,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                 // Poll audio meter
                 InternalPollMeter();
 
-                Thread.Sleep(20); // 50 Hz UI meter update loop
+                Thread.Sleep(50); // 20 Hz UI meter update loop (reduced COM IPC overhead)
             }
         }
         catch (Exception ex)
@@ -464,9 +464,12 @@ public class AudioEngine : IMMNotificationClient, IDisposable
         if (string.IsNullOrEmpty(deviceId)) return;
 
         const string clsid = "{968ff234-1895-49f1-8b97-9d9075eb25b6}";
+        const string pkeySfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},5";
+        const string pkeyCompositeSfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},13";
         const string pkeyEfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},7";
         const string pkeyCompositeEfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},15";
         const string pkeyEfxModes = "{d3993a3f-99c2-4402-b5ec-a92a0367664b},7";
+        const string dtsSfxClsid = "{8B778F49-83A0-4EE9-896A-ED52903EDF1F}";
 
         string cleanId = deviceId;
         int lastBrace = cleanId.LastIndexOf('{');
@@ -495,6 +498,35 @@ public class AudioEngine : IMMNotificationClient, IDisposable
             {
                 using (key)
                 {
+                    // Unhook stacked DTS Audio Effects SFX if present
+                    var sfx = key.GetValue(pkeySfx) as string;
+                    if (!string.IsNullOrEmpty(sfx) && string.Equals(sfx, dtsSfxClsid, StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (key.GetValue("PermadB_Backup_SFX_DTS") == null)
+                        {
+                            key.SetValue("PermadB_Backup_SFX_DTS", sfx, RegistryValueKind.String);
+                        }
+                        key.DeleteValue(pkeySfx, false);
+                    }
+
+                    var compSfx = key.GetValue(pkeyCompositeSfx) as string[];
+                    if (compSfx != null && compSfx.Any(s => string.Equals(s, dtsSfxClsid, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        if (key.GetValue("PermadB_Backup_CompositeSFX_DTS") == null)
+                        {
+                            key.SetValue("PermadB_Backup_CompositeSFX_DTS", compSfx, RegistryValueKind.MultiString);
+                        }
+                        var cleanedCompSfx = compSfx.Where(s => !string.Equals(s, dtsSfxClsid, StringComparison.OrdinalIgnoreCase)).ToArray();
+                        if (cleanedCompSfx.Length > 0)
+                        {
+                            key.SetValue(pkeyCompositeSfx, cleanedCompSfx, RegistryValueKind.MultiString);
+                        }
+                        else
+                        {
+                            key.DeleteValue(pkeyCompositeSfx, false);
+                        }
+                    }
+
                     var efx = key.GetValue(pkeyEfx) as string;
                     if (!string.Equals(efx, clsid, StringComparison.OrdinalIgnoreCase))
                     {
@@ -657,8 +689,11 @@ public class AudioEngine : IMMNotificationClient, IDisposable
             }
             else
             {
-                // Limiter APO is not active on this device - ensure endpoint registry binding
-                EnsureActiveDeviceFxProperties();
+                // Limiter APO is not active on this device - rate-limit registry check to once every 10s
+                if ((DateTime.UtcNow - _lastSessionScan).TotalSeconds > 9.5)
+                {
+                    EnsureActiveDeviceFxProperties();
+                }
                 peak = meterPeak;
                 peakDbfs = peak > 0.00001f ? 20.0f * (float)Math.Log10(peak) : -96.0f;
                 isClamping = false;
@@ -710,7 +745,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
             }
 
             // Per-Application Sound Mixer: Only scan sessions periodically (every 2s) to keep CPU at near 0%
-            if ((DateTime.UtcNow - _lastSessionScan).TotalSeconds > 2.0)
+            if ((DateTime.UtcNow - _lastSessionScan).TotalSeconds > 10.0)
             {
                 _lastSessionScan = DateTime.UtcNow;
                 var appSessionsList = new List<AppSessionInfo>();

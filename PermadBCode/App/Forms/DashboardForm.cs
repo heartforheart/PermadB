@@ -570,6 +570,8 @@ public class DashboardForm : Form
 
     private void RefreshLiveMetrics()
     {
+        if (!this.Visible) return;
+
         var m = _engine.LatestMetrics;
         var profile = _engine.GetActiveProfile();
 
@@ -626,6 +628,7 @@ public class DashboardForm : Form
         this.Activate();
 
         UpdatePresetCards();
+        RefreshLiveMetrics();
     }
 
     public void ToggleNearTray()

@@ -155,11 +155,21 @@ public:
         m_releaseCoeff = std::exp(-1.0f / (m_sampleRate * releaseSec));
 
         // Attack coefficient: ramps gain smoothly down over lookahead duration
-        float attackSec = (m_config.lookaheadMs * 0.25f) / 1000.0f;
-        if (attackSec < 0.0001f) attackSec = 0.0001f;
+        float attackSec = (m_config.lookaheadMs * 0.65f) / 1000.0f;
+        if (attackSec < 0.0005f) attackSec = 0.0005f;
         m_attackCoeff = std::exp(-1.0f / (m_sampleRate * attackSec));
 
         ResetStats();
+    }
+
+    // SoftResetForSilence: Preserves the delay buffer and gain state during brief BUFFER_SILENT gaps
+    // so that micro-pauses between audio frames never cause a 5ms dropout or static click!
+    void SoftResetForSilence()
+    {
+        m_dequeHead = 0;
+        m_dequeTail = 0;
+        m_dequeCount = 0;
+        m_holdFramesRemaining = 0;
     }
 
     void Reset()
@@ -302,10 +312,15 @@ public:
             }
 
             // BRICKWALL GUARANTEE:
-            // Ensure that m_currentGain NEVER allows delayedPeak to exceed m_ceilingLinear
+            // Smoothly converge toward required gain; avoid instantaneous step discontinuities
             if (delayedPeak > 0.00001f && (delayedPeak * m_currentGain > m_ceilingLinear))
             {
-                m_currentGain = m_ceilingLinear / delayedPeak;
+                float reqGain = m_ceilingLinear / delayedPeak;
+                m_currentGain = m_currentGain * 0.5f + reqGain * 0.5f;
+                if (delayedPeak * m_currentGain > m_ceilingLinear * 1.005f)
+                {
+                    m_currentGain = reqGain;
+                }
                 m_holdFramesRemaining = m_holdFramesTotal;
             }
 

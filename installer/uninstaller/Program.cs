@@ -151,7 +151,23 @@ static class Program
                         {
                             using (fxKey)
                             {
+                                const string pkeySfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},5";
+                                const string pkeyCompositeSfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},13";
                                 const string pkeyEfxModes = "{d3993a3f-99c2-4402-b5ec-a92a0367664b},7";
+
+                                // 0. Restore DTS SFX if backed up
+                                var backupSfx = fxKey.GetValue("PermadB_Backup_SFX_DTS") as string;
+                                if (!string.IsNullOrEmpty(backupSfx))
+                                {
+                                    fxKey.SetValue(pkeySfx, backupSfx, RegistryValueKind.String);
+                                    fxKey.DeleteValue("PermadB_Backup_SFX_DTS", false);
+                                }
+                                var backupCompSfx = fxKey.GetValue("PermadB_Backup_CompositeSFX_DTS") as string[];
+                                if (backupCompSfx != null && backupCompSfx.Length > 0)
+                                {
+                                    fxKey.SetValue(pkeyCompositeSfx, backupCompSfx, RegistryValueKind.MultiString);
+                                    fxKey.DeleteValue("PermadB_Backup_CompositeSFX_DTS", false);
+                                }
 
                                 // 1. Restore PKEY_FX_EndpointEffectClsid (,7)
                                 var currentEfx = fxKey.GetValue(pkeyEfx) as string;

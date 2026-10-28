@@ -10,38 +10,8 @@ static HMODULE g_hModule = NULL;
 
 static void LogApo(const wchar_t* format, ...)
 {
-    wchar_t buf[1024];
-    va_list args;
-    va_start(args, format);
-    _vsnwprintf_s(buf, _countof(buf), _TRUNCATE, format, args);
-    va_end(args);
-
-    OutputDebugStringW(L"[PermadBApo] ");
-    OutputDebugStringW(buf);
-    OutputDebugStringW(L"\n");
-
-    HANDLE hLog = CreateFileW(
-        L"C:\\Users\\Public\\permadb_apo.log",
-        FILE_APPEND_DATA,
-        FILE_SHARE_READ | FILE_SHARE_WRITE,
-        NULL,
-        OPEN_ALWAYS,
-        FILE_ATTRIBUTE_NORMAL,
-        NULL
-    );
-    if (hLog != INVALID_HANDLE_VALUE)
-    {
-        SYSTEMTIME st;
-        GetLocalTime(&st);
-        char line[1200];
-        int len = sprintf_s(line, "[%04d-%02d-%02d %02d:%02d:%02d.%03d | PID %lu] %ls\r\n",
-            st.wYear, st.wMonth, st.wDay,
-            st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
-            GetCurrentProcessId(), buf);
-        DWORD written = 0;
-        WriteFile(hLog, line, len, &written, NULL);
-        CloseHandle(hLog);
-    }
+    // Real-time audio thread safe: NEVER call CreateFileW/WriteFile inside audiodg.exe!
+    (void)format;
 }
 
 static const CRegAPOProperties<1> sm_RegProperties(
@@ -383,10 +353,18 @@ STDMETHODIMP_(void) CPermadBLimiterAPO::APOProcess(
 
     if (pIn->u32BufferFlags == BUFFER_SILENT)
     {
-        m_limiter.Reset();
-        ZeroMemory(pf32Out, sizeof(FLOAT32) * u32Frames * u32Channels);
+        // Drain the 5ms lookahead delay buffer smoothly instead of zeroing it out abruptly
+        // (prevents 5ms static/pop discontinuities when Windows marks brief buffers silent!)
+        ZeroMemory(pf32In, sizeof(FLOAT32) * u32Frames * u32Channels);
+        m_limiter.Process(pf32In, pf32Out, u32Frames);
+        FLOAT32 silentOutPeak = 0.0f;
+        for (UINT32 i = 0; i < u32Frames * u32Channels; ++i)
+        {
+            FLOAT32 a = std::abs(pf32Out[i]);
+            if (a > silentOutPeak) silentOutPeak = a;
+        }
         pOut->u32ValidFrameCount = u32Frames;
-        pOut->u32BufferFlags = BUFFER_SILENT;
+        pOut->u32BufferFlags = (silentOutPeak < 0.00001f) ? BUFFER_SILENT : BUFFER_VALID;
         return;
     }
 
