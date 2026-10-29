@@ -95,19 +95,6 @@ public static class InstallerEngine
             }
             catch { }
 
-            // Stop DTS HPX APO background service if running to prevent dual-APO stacking conflicts
-            try
-            {
-                var psiDts = new ProcessStartInfo("powershell.exe", "-NoProfile -ExecutionPolicy Bypass -Command \"Stop-Service -Name DtsHPXV2Apo4Service -Force -ErrorAction SilentlyContinue; Set-Service -Name DtsHPXV2Apo4Service -StartupType Manual -ErrorAction SilentlyContinue\"")
-                {
-                    CreateNoWindow = true,
-                    UseShellExecute = false
-                };
-                var pDts = Process.Start(psiDts);
-                pDts?.WaitForExit(3000);
-            }
-            catch { }
-
             progressCallback?.Invoke("Configuring Windows Audio Engine security policy...", 40);
             try
             {
@@ -236,13 +223,10 @@ public static class InstallerEngine
     private static void ConfigureEndpointFxProperties()
     {
         const string clsid = "{968ff234-1895-49f1-8b97-9d9075eb25b6}";
-        const string pkeySfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},5";
-        const string pkeyCompositeSfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},13";
         const string pkeyEfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},7";
         const string pkeyCompositeEfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},15";
         const string pkeySfxModes = "{d3993a3f-99c2-4402-b5ec-a92a0367664b},5";
         const string pkeyEfxModes = "{d3993a3f-99c2-4402-b5ec-a92a0367664b},7";
-        const string dtsSfxClsid = "{8B778F49-83A0-4EE9-896A-ED52903EDF1F}";
 
         try
         {
@@ -297,34 +281,38 @@ public static class InstallerEngine
                     {
                         using (fxKey)
                             {
-                                // 0. Detect and unhook stacked DTS Audio Effects SFX if present (Smoking Gun #3)
-                                var existingSfx = fxKey.GetValue(pkeySfx) as string;
-                                if (!string.IsNullOrEmpty(existingSfx) && string.Equals(existingSfx, dtsSfxClsid, StringComparison.OrdinalIgnoreCase))
+                                // 0. Self-healing: restore any third-party stream effect APOs (e.g. DTS / NGENUITY) backed up by older versions
+                                try
                                 {
-                                    if (fxKey.GetValue("PermadB_Backup_SFX_DTS") == null)
+                                    var backupComp = fxKey.GetValue("PermadB_Backup_CompositeSFX_DTS") as string[];
+                                    if (backupComp != null && backupComp.Length > 0)
                                     {
-                                        fxKey.SetValue("PermadB_Backup_SFX_DTS", existingSfx, RegistryValueKind.String);
+                                        const string pkeyCompSfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},13";
+                                        fxKey.SetValue(pkeyCompSfx, backupComp, RegistryValueKind.MultiString);
+                                        fxKey.DeleteValue("PermadB_Backup_CompositeSFX_DTS", false);
                                     }
-                                    fxKey.DeleteValue(pkeySfx, false);
                                 }
+                                catch { }
 
-                                var existingCompSfx = fxKey.GetValue(pkeyCompositeSfx) as string[];
-                                if (existingCompSfx != null && existingCompSfx.Any(s => string.Equals(s, dtsSfxClsid, StringComparison.OrdinalIgnoreCase)))
+                                try
                                 {
-                                    if (fxKey.GetValue("PermadB_Backup_CompositeSFX_DTS") == null)
+                                    var backupSfx = fxKey.GetValue("PermadB_Backup_SFX_DTS");
+                                    if (backupSfx != null)
                                     {
-                                        fxKey.SetValue("PermadB_Backup_CompositeSFX_DTS", existingCompSfx, RegistryValueKind.MultiString);
-                                    }
-                                    var cleanedCompSfx = existingCompSfx.Where(s => !string.Equals(s, dtsSfxClsid, StringComparison.OrdinalIgnoreCase)).ToArray();
-                                    if (cleanedCompSfx.Length > 0)
-                                    {
-                                        fxKey.SetValue(pkeyCompositeSfx, cleanedCompSfx, RegistryValueKind.MultiString);
-                                    }
-                                    else
-                                    {
-                                        fxKey.DeleteValue(pkeyCompositeSfx, false);
+                                        if (backupSfx is string[] multi)
+                                        {
+                                            const string pkeyCompSfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},13";
+                                            fxKey.SetValue(pkeyCompSfx, multi, RegistryValueKind.MultiString);
+                                        }
+                                        else if (backupSfx is string s && !string.IsNullOrEmpty(s))
+                                        {
+                                            const string pkeySingleSfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},5";
+                                            fxKey.SetValue(pkeySingleSfx, s, RegistryValueKind.String);
+                                        }
+                                        fxKey.DeleteValue("PermadB_Backup_SFX_DTS", false);
                                     }
                                 }
+                                catch { }
 
                                 // 1. Preserve and configure PKEY_FX_EndpointEffectClsid (,7)
                                 var existingEfx = fxKey.GetValue(pkeyEfx) as string;

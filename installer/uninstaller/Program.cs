@@ -156,10 +156,17 @@ static class Program
                                 const string pkeyEfxModes = "{d3993a3f-99c2-4402-b5ec-a92a0367664b},7";
 
                                 // 0. Restore DTS SFX if backed up
-                                var backupSfx = fxKey.GetValue("PermadB_Backup_SFX_DTS") as string;
-                                if (!string.IsNullOrEmpty(backupSfx))
+                                var backupSfx = fxKey.GetValue("PermadB_Backup_SFX_DTS");
+                                if (backupSfx != null)
                                 {
-                                    fxKey.SetValue(pkeySfx, backupSfx, RegistryValueKind.String);
+                                    if (backupSfx is string[] multi)
+                                    {
+                                        fxKey.SetValue(pkeyCompositeSfx, multi, RegistryValueKind.MultiString);
+                                    }
+                                    else if (backupSfx is string s && !string.IsNullOrEmpty(s))
+                                    {
+                                        fxKey.SetValue(pkeySfx, s, RegistryValueKind.String);
+                                    }
                                     fxKey.DeleteValue("PermadB_Backup_SFX_DTS", false);
                                 }
                                 var backupCompSfx = fxKey.GetValue("PermadB_Backup_CompositeSFX_DTS") as string[];

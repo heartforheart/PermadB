@@ -464,12 +464,9 @@ public class AudioEngine : IMMNotificationClient, IDisposable
         if (string.IsNullOrEmpty(deviceId)) return;
 
         const string clsid = "{968ff234-1895-49f1-8b97-9d9075eb25b6}";
-        const string pkeySfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},5";
-        const string pkeyCompositeSfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},13";
         const string pkeyEfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},7";
         const string pkeyCompositeEfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},15";
         const string pkeyEfxModes = "{d3993a3f-99c2-4402-b5ec-a92a0367664b},7";
-        const string dtsSfxClsid = "{8B778F49-83A0-4EE9-896A-ED52903EDF1F}";
 
         string cleanId = deviceId;
         int lastBrace = cleanId.LastIndexOf('{');
@@ -498,34 +495,38 @@ public class AudioEngine : IMMNotificationClient, IDisposable
             {
                 using (key)
                 {
-                    // Unhook stacked DTS Audio Effects SFX if present
-                    var sfx = key.GetValue(pkeySfx) as string;
-                    if (!string.IsNullOrEmpty(sfx) && string.Equals(sfx, dtsSfxClsid, StringComparison.OrdinalIgnoreCase))
+                    // Self-healing: restore any third-party stream effect APOs (e.g. DTS / NGENUITY) backed up by older versions
+                    try
                     {
-                        if (key.GetValue("PermadB_Backup_SFX_DTS") == null)
+                        var backupComp = key.GetValue("PermadB_Backup_CompositeSFX_DTS") as string[];
+                        if (backupComp != null && backupComp.Length > 0)
                         {
-                            key.SetValue("PermadB_Backup_SFX_DTS", sfx, RegistryValueKind.String);
+                            const string pkeyCompositeSfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},13";
+                            key.SetValue(pkeyCompositeSfx, backupComp, RegistryValueKind.MultiString);
+                            key.DeleteValue("PermadB_Backup_CompositeSFX_DTS", false);
                         }
-                        key.DeleteValue(pkeySfx, false);
                     }
+                    catch { }
 
-                    var compSfx = key.GetValue(pkeyCompositeSfx) as string[];
-                    if (compSfx != null && compSfx.Any(s => string.Equals(s, dtsSfxClsid, StringComparison.OrdinalIgnoreCase)))
+                    try
                     {
-                        if (key.GetValue("PermadB_Backup_CompositeSFX_DTS") == null)
+                        var backupSfx = key.GetValue("PermadB_Backup_SFX_DTS");
+                        if (backupSfx != null)
                         {
-                            key.SetValue("PermadB_Backup_CompositeSFX_DTS", compSfx, RegistryValueKind.MultiString);
-                        }
-                        var cleanedCompSfx = compSfx.Where(s => !string.Equals(s, dtsSfxClsid, StringComparison.OrdinalIgnoreCase)).ToArray();
-                        if (cleanedCompSfx.Length > 0)
-                        {
-                            key.SetValue(pkeyCompositeSfx, cleanedCompSfx, RegistryValueKind.MultiString);
-                        }
-                        else
-                        {
-                            key.DeleteValue(pkeyCompositeSfx, false);
+                            if (backupSfx is string[] multi)
+                            {
+                                const string pkeyCompositeSfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},13";
+                                key.SetValue(pkeyCompositeSfx, multi, RegistryValueKind.MultiString);
+                            }
+                            else if (backupSfx is string s && !string.IsNullOrEmpty(s))
+                            {
+                                const string pkeySfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},5";
+                                key.SetValue(pkeySfx, s, RegistryValueKind.String);
+                            }
+                            key.DeleteValue("PermadB_Backup_SFX_DTS", false);
                         }
                     }
+                    catch { }
 
                     var efx = key.GetValue(pkeyEfx) as string;
                     if (!string.Equals(efx, clsid, StringComparison.OrdinalIgnoreCase))
