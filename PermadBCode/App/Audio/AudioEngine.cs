@@ -76,8 +76,8 @@ public class AudioMetrics
     public int ProtectedDevicesCount { get; set; } = 1;
     public bool AppMixerGuardEnabled { get; set; } = true;
     public bool AppFilteringEnabled { get; set; } = false;
-    public float Custom1PresetPercent { get; set; } = 85.0f;
-    public float Custom2PresetPercent { get; set; } = 45.0f;
+    public float Custom1PresetPercent { get; set; } = 10.0f;
+    public float Custom2PresetPercent { get; set; } = 100.0f;
     public Dictionary<string, bool> AppProtectionRules { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public List<AppSessionInfo> AppSessions { get; set; } = new();
 }
@@ -282,34 +282,10 @@ public class AudioEngine : IMMNotificationClient, IDisposable
         if (string.IsNullOrWhiteSpace(processName)) return;
         _config.Settings.AppProtectionRules[processName] = isProtected;
         _config.Save();
+        _lastSessionScan = DateTime.MinValue; // Force immediate re-scan and volume update!
         PostToAudioThread(() =>
         {
-            InternalPollMeter();
-        });
-    }
-
-    public void SetVoipAppsProtection(bool isProtected)
-    {
-        foreach (var app in CommunicationApps)
-        {
-            _config.Settings.AppProtectionRules[app] = isProtected;
-        }
-        _config.Save();
-        PostToAudioThread(() =>
-        {
-            InternalPollMeter();
-        });
-    }
-
-    public void SetMusicAppsProtection(bool isProtected)
-    {
-        foreach (var app in MusicApps)
-        {
-            _config.Settings.AppProtectionRules[app] = isProtected;
-        }
-        _config.Save();
-        PostToAudioThread(() =>
-        {
+            InternalEnforceCeiling();
             InternalPollMeter();
         });
     }
@@ -318,6 +294,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
     {
         _config.Settings.AppFilteringEnabled = enabled ?? !_config.Settings.AppFilteringEnabled;
         _config.Save();
+        _lastSessionScan = DateTime.MinValue; // Force immediate re-scan!
         PostToAudioThread(() =>
         {
             InternalEnforceCeiling();
@@ -345,13 +322,14 @@ public class AudioEngine : IMMNotificationClient, IDisposable
     {
         var dict = new Dictionary<string, AppSessionInfo>(StringComparer.OrdinalIgnoreCase);
 
-        // 1. Add active WASAPI audio sessions
+        // 1. Add active WASAPI audio sessions with real-time evaluated protection
         lock (_stateLock)
         {
             foreach (var app in _cachedAppSessions)
             {
                 if (!string.IsNullOrWhiteSpace(app.ProcessName))
                 {
+                    app.IsProtected = IsAppProtected(app.ProcessName);
                     dict[app.ProcessName] = app;
                 }
             }
@@ -977,8 +955,8 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                 OnPeakClamped?.Invoke(peakDbfs);
             }
 
-            // Per-Application Sound Mixer & Active Session Leveler
-            if ((DateTime.UtcNow - _lastSessionScan).TotalSeconds > 1.5)
+            // Per-Application Sound Mixer & Active Session Leveler (Responsive 100ms cycle)
+            if ((DateTime.UtcNow - _lastSessionScan).TotalMilliseconds >= 100)
             {
                 _lastSessionScan = DateTime.UtcNow;
                 var appSessionsList = new List<AppSessionInfo>();
@@ -1035,7 +1013,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                             {
                                 if (!_appBaselineVolume.ContainsKey(procName))
                                 {
-                                    _appBaselineVolume[procName] = Math.Max(appVol, 0.2f);
+                                    _appBaselineVolume[procName] = Math.Max(appVol, 0.8f);
                                 }
                                 float baseline = _appBaselineVolume[procName];
 
@@ -1051,10 +1029,19 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                                 }
                                 else if (_appLastClampTime.TryGetValue(procName, out var lastClamped))
                                 {
-                                    if ((DateTime.UtcNow - lastClamped).TotalSeconds > 1.2 && appVol < baseline)
+                                    if ((DateTime.UtcNow - lastClamped).TotalMilliseconds > 300 && appVol < baseline)
                                     {
-                                        s.SimpleAudioVolume.Volume = Math.Min(baseline, appVol + 0.05f);
+                                        s.SimpleAudioVolume.Volume = Math.Min(baseline, appVol + 0.15f);
                                     }
+                                }
+                            }
+                            else
+                            {
+                                // Application is BYPASSED (e.g. music blasting)
+                                // If it was previously clamped down by PermadB, immediately restore full baseline!
+                                if (appVol < 1.0f && _appBaselineVolume.TryGetValue(procName, out float bVal))
+                                {
+                                    s.SimpleAudioVolume.Volume = Math.Max(bVal, 1.0f);
                                 }
                             }
                         }

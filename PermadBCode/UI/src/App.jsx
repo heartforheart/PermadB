@@ -242,20 +242,6 @@ export default function App() {
     setShowAddApp(false);
   };
 
-  const handlePresetVoip = async () => {
-    const voips = ["Discord", "Slack", "Teams", "Skype", "Zoom", "Telegram", "WhatsApp"];
-    for (const v of voips) {
-      await handleToggleAppProtection(v, false);
-    }
-  };
-
-  const handlePresetMusic = async () => {
-    const musics = ["Spotify", "vlc", "foobar2000", "MusicBee", "AppleMusic", "Tidal"];
-    for (const m of musics) {
-      await handleToggleAppProtection(m, true);
-    }
-  };
-
   // Toggle Windows Autostart
   const toggleStartWithWindows = async () => {
     const nextVal = !settings.startWithWindows;
@@ -678,7 +664,7 @@ export default function App() {
             >
               <Sliders size={20} color={settings.activePreset === 'custom1' || settings.activePreset === 'custom' ? '#10b981' : '#94a3b8'} />
               <span className="preset-btn-name">Custom 1</span>
-              <span className="preset-btn-desc">{(settings.custom1PresetPercent || settings.customPresetPercent || 85).toFixed(0)}% / High</span>
+              <span className="preset-btn-desc">{(settings.custom1PresetPercent || settings.customPresetPercent || 10).toFixed(0)}% / Lowest</span>
             </button>
 
             <button 
@@ -687,7 +673,7 @@ export default function App() {
             >
               <Sliders size={20} color={settings.activePreset === 'custom2' ? '#10b981' : '#94a3b8'} />
               <span className="preset-btn-name">Custom 2</span>
-              <span className="preset-btn-desc">{(settings.custom2PresetPercent || 45).toFixed(0)}% / Low</span>
+              <span className="preset-btn-desc">{(settings.custom2PresetPercent || 100).toFixed(0)}% / Highest</span>
             </button>
           </div>
 
@@ -881,40 +867,8 @@ export default function App() {
             Actively scans the Windows Sound Mixer. If any game (like CS2 at <code>volume 1</code>) or software pushes sound pressure into an unsafe dB range, PermadB automatically levels its mixer volume down to your safe ceiling.
           </p>
 
-          {/* Quick preset action buttons & custom process adder */}
+          {/* Custom process adder */}
           <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', marginBottom: '1rem', alignItems: 'center' }}>
-            <button
-              onClick={handlePresetVoip}
-              style={{
-                background: 'rgba(56, 189, 248, 0.12)',
-                color: '#38bdf8',
-                border: '1px solid rgba(56, 189, 248, 0.25)',
-                borderRadius: '6px',
-                padding: '4px 10px',
-                fontSize: '0.78rem',
-                fontWeight: '600',
-                cursor: 'pointer'
-              }}
-              title="Clamp Discord, Slack, Teams, Skype, and Zoom"
-            >
-              🛡️ Limit All VoIP
-            </button>
-            <button
-              onClick={handlePresetMusic}
-              style={{
-                background: 'rgba(245, 158, 11, 0.12)',
-                color: '#f59e0b',
-                border: '1px solid rgba(245, 158, 11, 0.25)',
-                borderRadius: '6px',
-                padding: '4px 10px',
-                fontSize: '0.78rem',
-                fontWeight: '600',
-                cursor: 'pointer'
-              }}
-              title="Bypass Spotify, VLC, and media players so music blasts at full volume"
-            >
-              ⚡ Bypass All Music
-            </button>
             <button
               onClick={() => setShowAddApp(!showAddApp)}
               style={{
@@ -922,8 +876,8 @@ export default function App() {
                 color: '#f8fafc',
                 border: '1px solid rgba(255, 255, 255, 0.15)',
                 borderRadius: '6px',
-                padding: '4px 10px',
-                fontSize: '0.78rem',
+                padding: '4px 12px',
+                fontSize: '0.8rem',
                 fontWeight: '600',
                 cursor: 'pointer'
               }}

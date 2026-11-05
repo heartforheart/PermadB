@@ -31,6 +31,7 @@ public class TrayIconManager : IDisposable
     private ToolStripMenuItem _startupItem = null!;
 
     public event Action? OnOpenDashboardRequested;
+    public event Action? OnOpenAppManagerRequested;
     public event Action? OnExitRequested;
 
     public TrayIconManager(ConfigManager config, AudioEngine engine)
@@ -132,43 +133,43 @@ public class TrayIconManager : IDisposable
         });
         _contextMenu.Items.Add(_studioPresetItem);
 
-        // Custom 1 Preset (High / Saved)
+        // Custom 1 Preset (Lowest / Saved)
         float custom1Percent = _config.Settings.Custom1PresetPercent;
         float custom1Spl = 50.0f + (custom1Percent / 100.0f) * 38.0f;
-        _custom1PresetItem = new ToolStripMenuItem($"Custom 1 - High ({custom1Percent:F0}% Ceiling / {custom1Spl:F0} dBA)", null, (s, e) =>
+        _custom1PresetItem = new ToolStripMenuItem($"Custom 1 - Lowest ({custom1Percent:F0}% Ceiling / {custom1Spl:F0} dBA)", null, (s, e) =>
         {
             _engine.ApplyPreset("custom1");
             UpdateTrayAppearance();
-            ShowNotification("Custom 1 Activated", $"Volume ceiling set to Custom 1 ({_config.Settings.Custom1PresetPercent:F0}%).");
+            ShowNotification("Custom 1 Activated", $"Volume ceiling set to Custom 1 Lowest ({_config.Settings.Custom1PresetPercent:F0}%).");
         });
         _contextMenu.Items.Add(_custom1PresetItem);
 
-        // Custom 2 Preset (Low / Saved)
+        // Custom 2 Preset (Highest / Saved)
         float custom2Percent = _config.Settings.Custom2PresetPercent;
         float custom2Spl = 50.0f + (custom2Percent / 100.0f) * 38.0f;
-        _custom2PresetItem = new ToolStripMenuItem($"Custom 2 - Low ({custom2Percent:F0}% Ceiling / {custom2Spl:F0} dBA)", null, (s, e) =>
+        _custom2PresetItem = new ToolStripMenuItem($"Custom 2 - Highest ({custom2Percent:F0}% Ceiling / {custom2Spl:F0} dBA)", null, (s, e) =>
         {
             _engine.ApplyPreset("custom2");
             UpdateTrayAppearance();
-            ShowNotification("Custom 2 Activated", $"Volume ceiling set to Custom 2 ({_config.Settings.Custom2PresetPercent:F0}%).");
+            ShowNotification("Custom 2 Activated", $"Volume ceiling set to Custom 2 Highest ({_config.Settings.Custom2PresetPercent:F0}%).");
         });
         _contextMenu.Items.Add(_custom2PresetItem);
 
-        _saveCustom1Item = new ToolStripMenuItem("💾 Save Current Ceiling as Custom 1 (High)", null, (s, e) =>
+        _saveCustom1Item = new ToolStripMenuItem("💾 Save Current Ceiling as Custom 1 (Lowest)", null, (s, e) =>
         {
             var profile = _engine.GetActiveProfile();
             _engine.SaveCustomPreset(1, profile.SafeCeilingPercent);
             UpdateTrayAppearance();
-            ShowNotification("Custom 1 Saved", $"Saved {profile.SafeCeilingPercent:F0}% as Custom 1.");
+            ShowNotification("Custom 1 Saved", $"Saved {profile.SafeCeilingPercent:F0}% as Custom 1 (Lowest).");
         });
         _contextMenu.Items.Add(_saveCustom1Item);
 
-        _saveCustom2Item = new ToolStripMenuItem("💾 Save Current Ceiling as Custom 2 (Low)", null, (s, e) =>
+        _saveCustom2Item = new ToolStripMenuItem("💾 Save Current Ceiling as Custom 2 (Highest)", null, (s, e) =>
         {
             var profile = _engine.GetActiveProfile();
             _engine.SaveCustomPreset(2, profile.SafeCeilingPercent);
             UpdateTrayAppearance();
-            ShowNotification("Custom 2 Saved", $"Saved {profile.SafeCeilingPercent:F0}% as Custom 2.");
+            ShowNotification("Custom 2 Saved", $"Saved {profile.SafeCeilingPercent:F0}% as Custom 2 (Highest).");
         });
         _contextMenu.Items.Add(_saveCustom2Item);
 
@@ -309,14 +310,14 @@ public class TrayIconManager : IDisposable
 
             var c1Val = _config.Settings.Custom1PresetPercent;
             var c1Spl = 50.0f + (c1Val / 100.0f) * 38.0f;
-            _custom1PresetItem.Text = $"Custom 1 - High ({c1Val:F0}% / {c1Spl:F0} dBA)";
+            _custom1PresetItem.Text = $"Custom 1 - Lowest ({c1Val:F0}% / {c1Spl:F0} dBA)";
 
             var c2Val = _config.Settings.Custom2PresetPercent;
             var c2Spl = 50.0f + (c2Val / 100.0f) * 38.0f;
-            _custom2PresetItem.Text = $"Custom 2 - Low ({c2Val:F0}% / {c2Spl:F0} dBA)";
+            _custom2PresetItem.Text = $"Custom 2 - Highest ({c2Val:F0}% / {c2Spl:F0} dBA)";
 
-            _saveCustom1Item.Text = $"💾 Save Current ({profile.SafeCeilingPercent:F0}%) as Custom 1";
-            _saveCustom2Item.Text = $"💾 Save Current ({profile.SafeCeilingPercent:F0}%) as Custom 2";
+            _saveCustom1Item.Text = $"💾 Save Current ({profile.SafeCeilingPercent:F0}%) as Custom 1 (Lowest)";
+            _saveCustom2Item.Text = $"💾 Save Current ({profile.SafeCeilingPercent:F0}%) as Custom 2 (Highest)";
 
             _strictLockItem.Checked = _config.Settings.StrictVolumeLock;
             _appFilteringItem.Text = _config.Settings.AppFilteringEnabled ? "🎯 App-Specific Limiting [ON] ▶" : "🎯 App-Specific Limiting [OFF] ▶";
@@ -404,23 +405,6 @@ public class TrayIconManager : IDisposable
 
             _appFilteringItem.DropDownItems.Add(new ToolStripSeparator());
 
-            // 4. Batch Actions
-            var limitVoip = new ToolStripMenuItem("🛡️ Limit All VoIP / Chat (Discord, Teams, Zoom)", null, (s, e) =>
-            {
-                _engine.SetVoipAppsProtection(true);
-                ShowNotification("VoIP Clamped", "Discord, Teams, Zoom, Slack, and Skype are now limited!");
-                PopulateAppFilteringMenu();
-            });
-            _appFilteringItem.DropDownItems.Add(limitVoip);
-
-            var bypassMusic = new ToolStripMenuItem("⚡ Bypass All Music (Spotify, VLC, Apple Music)", null, (s, e) =>
-            {
-                _engine.SetMusicAppsProtection(false);
-                ShowNotification("Music Bypassed", "Spotify, VLC, and media players are now bypassed (100% blast)!");
-                PopulateAppFilteringMenu();
-            });
-            _appFilteringItem.DropDownItems.Add(bypassMusic);
-
             var addApp = new ToolStripMenuItem("➕ Add App Process Name...", null, (s, e) =>
             {
                 PromptAddProcess();
@@ -431,7 +415,7 @@ public class TrayIconManager : IDisposable
 
             var manageInDash = new ToolStripMenuItem("📊 Open App Manager in Dashboard...", null, (s, e) =>
             {
-                OnOpenDashboardRequested?.Invoke();
+                OnOpenAppManagerRequested?.Invoke();
             });
             _appFilteringItem.DropDownItems.Add(manageInDash);
         }

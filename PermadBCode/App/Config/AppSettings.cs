@@ -28,10 +28,10 @@ public class AppSettings
     public bool StartWithWindows { get; set; } = true;
     public string ActivePreset { get; set; } = "safe"; // "safe", "night", "studio", "custom"
     
-    // User-saved custom presets (0 to 100)
-    // Custom 1 (High / Music / Dynamic) & Custom 2 (Low / Night / Voice)
-    public float Custom1PresetPercent { get; set; } = 85.0f;
-    public float Custom2PresetPercent { get; set; } = 45.0f;
+    // User-saved custom presets (10 to 100)
+    // Custom 1 (Lowest / 10%) & Custom 2 (Highest / 100%)
+    public float Custom1PresetPercent { get; set; } = 10.0f;
+    public float Custom2PresetPercent { get; set; } = 100.0f;
 
     // Backward-compatibility alias for single CustomPresetPercent
     public float CustomPresetPercent
