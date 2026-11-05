@@ -454,11 +454,11 @@ public class DashboardForm : Form
 
         _chkAppFiltering = new CheckBox
         {
-            Text = "App-Specific Limiting (Discord only, music blast)",
+            Text = "App-Specific Limiting",
             Font = new Font("Segoe UI", 8.5f, FontStyle.Regular),
             ForeColor = _textWhite,
             Location = new Point(14, 90),
-            Size = new Size(360, 24),
+            Size = new Size(196, 24),
             Checked = _config.Settings.AppFilteringEnabled,
             Cursor = Cursors.Hand
         };
@@ -469,19 +469,38 @@ public class DashboardForm : Form
             _engine.EnforceVolumeCeiling();
         };
 
+        var btnSelectApps = new Button
+        {
+            Text = "🎯 Select Apps (ON / OFF)...",
+            Font = new Font("Segoe UI", 8.0f, FontStyle.Bold),
+            Size = new Size(166, 24),
+            Location = new Point(214, 90),
+            FlatStyle = FlatStyle.Flat,
+            BackColor = Color.FromArgb(51, 65, 85),
+            ForeColor = Color.White,
+            Cursor = Cursors.Hand
+        };
+        btnSelectApps.FlatAppearance.BorderSize = 0;
+        btnSelectApps.Click += (s, e) =>
+        {
+            using var dlg = new AppManagerForm(_engine, _config);
+            dlg.ShowDialog(this);
+        };
+
         var hintLabel = new Label
         {
-            Text = "💡 Safe volume ceiling protects your hearing from spikes. When App-Specific is enabled, bypassed music can blast at 100% full volume.",
+            Text = "💡 Safe volume ceiling protects hearing. With App-Specific enabled, only chosen apps are clamped; bypassed music blasts at 100% full scale.",
             Font = new Font("Segoe UI", 8.0f, FontStyle.Italic),
             ForeColor = _textMuted,
-            Location = new Point(12, 118),
-            Size = new Size(368, 56)
+            Location = new Point(12, 120),
+            Size = new Size(368, 54)
         };
 
         _settingsCard.Controls.Add(_deviceInfoLabel);
         _settingsCard.Controls.Add(_chkStartup);
         _settingsCard.Controls.Add(_chkAllDevices);
         _settingsCard.Controls.Add(_chkAppFiltering);
+        _settingsCard.Controls.Add(btnSelectApps);
         _settingsCard.Controls.Add(hintLabel);
         this.Controls.Add(_settingsCard);
 

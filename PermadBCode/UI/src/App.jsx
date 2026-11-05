@@ -228,6 +228,34 @@ export default function App() {
     } catch (e) {}
   };
 
+  const [customAppInput, setCustomAppInput] = useState('');
+  const [showAddApp, setShowAddApp] = useState(false);
+
+  const handleAddCustomApp = async () => {
+    let pName = customAppInput.trim();
+    if (pName.toLowerCase().endsWith('.exe')) {
+      pName = pName.slice(0, -4);
+    }
+    if (!pName) return;
+    await handleToggleAppProtection(pName, false);
+    setCustomAppInput('');
+    setShowAddApp(false);
+  };
+
+  const handlePresetVoip = async () => {
+    const voips = ["Discord", "Slack", "Teams", "Skype", "Zoom", "Telegram", "WhatsApp"];
+    for (const v of voips) {
+      await handleToggleAppProtection(v, false);
+    }
+  };
+
+  const handlePresetMusic = async () => {
+    const musics = ["Spotify", "vlc", "foobar2000", "MusicBee", "AppleMusic", "Tidal"];
+    for (const m of musics) {
+      await handleToggleAppProtection(m, true);
+    }
+  };
+
   // Toggle Windows Autostart
   const toggleStartWithWindows = async () => {
     const nextVal = !settings.startWithWindows;
@@ -849,9 +877,96 @@ export default function App() {
             </div>
           </div>
 
-          <p style={{ fontSize: '0.82rem', color: '#94a3b8', margin: '0 0 1rem 0' }}>
+          <p style={{ fontSize: '0.82rem', color: '#94a3b8', margin: '0 0 0.85rem 0' }}>
             Actively scans the Windows Sound Mixer. If any game (like CS2 at <code>volume 1</code>) or software pushes sound pressure into an unsafe dB range, PermadB automatically levels its mixer volume down to your safe ceiling.
           </p>
+
+          {/* Quick preset action buttons & custom process adder */}
+          <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', marginBottom: '1rem', alignItems: 'center' }}>
+            <button
+              onClick={handlePresetVoip}
+              style={{
+                background: 'rgba(56, 189, 248, 0.12)',
+                color: '#38bdf8',
+                border: '1px solid rgba(56, 189, 248, 0.25)',
+                borderRadius: '6px',
+                padding: '4px 10px',
+                fontSize: '0.78rem',
+                fontWeight: '600',
+                cursor: 'pointer'
+              }}
+              title="Clamp Discord, Slack, Teams, Skype, and Zoom"
+            >
+              🛡️ Limit All VoIP
+            </button>
+            <button
+              onClick={handlePresetMusic}
+              style={{
+                background: 'rgba(245, 158, 11, 0.12)',
+                color: '#f59e0b',
+                border: '1px solid rgba(245, 158, 11, 0.25)',
+                borderRadius: '6px',
+                padding: '4px 10px',
+                fontSize: '0.78rem',
+                fontWeight: '600',
+                cursor: 'pointer'
+              }}
+              title="Bypass Spotify, VLC, and media players so music blasts at full volume"
+            >
+              ⚡ Bypass All Music
+            </button>
+            <button
+              onClick={() => setShowAddApp(!showAddApp)}
+              style={{
+                background: 'rgba(255, 255, 255, 0.08)',
+                color: '#f8fafc',
+                border: '1px solid rgba(255, 255, 255, 0.15)',
+                borderRadius: '6px',
+                padding: '4px 10px',
+                fontSize: '0.78rem',
+                fontWeight: '600',
+                cursor: 'pointer'
+              }}
+            >
+              ➕ Add App Process...
+            </button>
+
+            {showAddApp && (
+              <div style={{ display: 'flex', gap: '6px', alignItems: 'center', width: '100%', marginTop: '6px' }}>
+                <input
+                  type="text"
+                  placeholder="e.g. Discord, Spotify, cs2, chrome..."
+                  value={customAppInput}
+                  onChange={e => setCustomAppInput(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') handleAddCustomApp(); }}
+                  style={{
+                    background: '#0f172a',
+                    border: '1px solid #334155',
+                    borderRadius: '6px',
+                    color: '#fff',
+                    padding: '5px 10px',
+                    fontSize: '0.82rem',
+                    flex: '1'
+                  }}
+                />
+                <button
+                  onClick={handleAddCustomApp}
+                  style={{
+                    background: '#10b981',
+                    color: '#fff',
+                    border: 'none',
+                    borderRadius: '6px',
+                    padding: '5px 14px',
+                    fontSize: '0.82rem',
+                    fontWeight: 'bold',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Add
+                </button>
+              </div>
+            )}
+          </div>
 
           {(!metrics.appSessions || metrics.appSessions.length === 0) ? (
             <div style={{

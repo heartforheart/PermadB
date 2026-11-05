@@ -154,12 +154,24 @@ public class AudioEngine : IMMNotificationClient, IDisposable
     private readonly ConcurrentDictionary<string, float> _appSmoothedPeak = new(StringComparer.OrdinalIgnoreCase);
 
     // Voice communication applications where speech intelligibility must NEVER be crushed or muted
-    private static readonly HashSet<string> CommunicationApps = new(StringComparer.OrdinalIgnoreCase)
+    public static readonly HashSet<string> CommunicationApps = new(StringComparer.OrdinalIgnoreCase)
     {
         "Discord", "DiscordCanary", "DiscordPTB", "DiscordDevelopment",
         "Slack", "Teams", "ms-teams", "Skype", "Zoom",
         "TeamSpeak", "ts3client_win64", "ts3client_win32",
         "Ventrilo", "Mumble", "Telegram", "WhatsApp", "Steam"
+    };
+
+    // Music and media playback applications where users want unconstrained full-scale blast
+    public static readonly HashSet<string> MusicApps = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Spotify", "vlc", "foobar2000", "MusicBee", "AppleMusic", "Tidal", "AIMP", "wmplayer", "iTunes", "Audacity", "Deezer"
+    };
+
+    // Major web browsers and game launchers
+    public static readonly HashSet<string> BrowserApps = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "chrome", "msedge", "firefox", "brave", "opera", "vivaldi", "EpicGamesLauncher"
     };
 
     public AudioMetrics LatestMetrics
@@ -276,6 +288,32 @@ public class AudioEngine : IMMNotificationClient, IDisposable
         });
     }
 
+    public void SetVoipAppsProtection(bool isProtected)
+    {
+        foreach (var app in CommunicationApps)
+        {
+            _config.Settings.AppProtectionRules[app] = isProtected;
+        }
+        _config.Save();
+        PostToAudioThread(() =>
+        {
+            InternalPollMeter();
+        });
+    }
+
+    public void SetMusicAppsProtection(bool isProtected)
+    {
+        foreach (var app in MusicApps)
+        {
+            _config.Settings.AppProtectionRules[app] = isProtected;
+        }
+        _config.Save();
+        PostToAudioThread(() =>
+        {
+            InternalPollMeter();
+        });
+    }
+
     public void ToggleAppFiltering(bool? enabled = null)
     {
         _config.Settings.AppFilteringEnabled = enabled ?? !_config.Settings.AppFilteringEnabled;
@@ -294,8 +332,97 @@ public class AudioEngine : IMMNotificationClient, IDisposable
         {
             return val;
         }
+        // Known communication apps default to true (Protected so loud screams are clamped)
         if (CommunicationApps.Contains(processName)) return true;
-        return true;
+        // Known music players default to false (Bypassed so music can blast)
+        if (MusicApps.Contains(processName)) return false;
+        // When App-Specific limiting is active, other apps default to bypassed (false)
+        // When global limiting is active, other apps default to protected (true)
+        return !_config.Settings.AppFilteringEnabled;
+    }
+
+    public List<AppSessionInfo> GetDiscoverableAudioApps()
+    {
+        var dict = new Dictionary<string, AppSessionInfo>(StringComparer.OrdinalIgnoreCase);
+
+        // 1. Add active WASAPI audio sessions
+        lock (_stateLock)
+        {
+            foreach (var app in _cachedAppSessions)
+            {
+                if (!string.IsNullOrWhiteSpace(app.ProcessName))
+                {
+                    dict[app.ProcessName] = app;
+                }
+            }
+        }
+
+        // 2. Add saved configured rules from settings
+        foreach (var kvp in _config.Settings.AppProtectionRules)
+        {
+            if (!dict.ContainsKey(kvp.Key))
+            {
+                dict[kvp.Key] = new AppSessionInfo
+                {
+                    ProcessName = kvp.Key,
+                    DisplayName = kvp.Key,
+                    IsProtected = kvp.Value,
+                    IsClamped = false,
+                    IsMuted = false,
+                    VolumePercent = 100.0f,
+                    PeakDbfs = -96.0f,
+                    EstimatedDbSpl = 0.0f
+                };
+            }
+        }
+
+        // 3. Scan running communication, music, and browser processes
+        try
+        {
+            var processes = Process.GetProcesses();
+            foreach (var p in processes)
+            {
+                try
+                {
+                    string pName = p.ProcessName;
+                    if (dict.ContainsKey(pName)) continue;
+
+                    bool isTarget = CommunicationApps.Contains(pName) ||
+                                    MusicApps.Contains(pName) ||
+                                    BrowserApps.Contains(pName) ||
+                                    (!string.IsNullOrEmpty(p.MainWindowTitle) && 
+                                     !pName.Equals("explorer", StringComparison.OrdinalIgnoreCase) && 
+                                     !pName.Equals("PermadB", StringComparison.OrdinalIgnoreCase) &&
+                                     !pName.Equals("TextInputHost", StringComparison.OrdinalIgnoreCase));
+
+                    if (isTarget)
+                    {
+                        bool isProt = IsAppProtected(pName);
+                        dict[pName] = new AppSessionInfo
+                        {
+                            ProcessId = p.Id,
+                            ProcessName = pName,
+                            DisplayName = !string.IsNullOrWhiteSpace(p.MainWindowTitle) ? $"{pName} ({p.MainWindowTitle})" : pName,
+                            IsProtected = isProt,
+                            IsClamped = false,
+                            IsMuted = false,
+                            VolumePercent = 100.0f,
+                            PeakDbfs = -96.0f,
+                            EstimatedDbSpl = 0.0f
+                        };
+                    }
+                }
+                catch { }
+            }
+        }
+        catch { }
+
+        // Sort: active sessions first, then communication apps, then alphabetical
+        return dict.Values
+            .OrderByDescending(a => a.PeakValue > 0.001f)
+            .ThenByDescending(a => CommunicationApps.Contains(a.ProcessName))
+            .ThenBy(a => a.ProcessName)
+            .ToList();
     }
 
     public void ApplyPreset(string preset)
@@ -974,7 +1101,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                 Custom1PresetPercent = _config.Settings.Custom1PresetPercent,
                 Custom2PresetPercent = _config.Settings.Custom2PresetPercent,
                 AppProtectionRules = new Dictionary<string, bool>(_config.Settings.AppProtectionRules, StringComparer.OrdinalIgnoreCase),
-                AppSessions = _cachedAppSessions
+                AppSessions = GetDiscoverableAudioApps()
             };
 
             LatestMetrics = m;
