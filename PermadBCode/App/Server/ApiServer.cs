@@ -187,8 +187,11 @@ public class ApiServer : IDisposable
 
                 if (incoming.TryGetProperty("appFilteringEnabled", out var appFilterProp))
                 {
-                    _config.Settings.AppFilteringEnabled = appFilterProp.GetBoolean();
-                    _engine.EnforceVolumeCeiling();
+                    var isFilter = appFilterProp.GetBoolean();
+                    if (_config.Settings.AppFilteringEnabled != isFilter)
+                    {
+                        _engine.ToggleAppFiltering(isFilter);
+                    }
                 }
 
                 _config.Save();

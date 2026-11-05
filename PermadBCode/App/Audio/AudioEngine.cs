@@ -305,7 +305,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
 
     public bool IsAppProtected(string processName)
     {
-        if (string.IsNullOrWhiteSpace(processName)) return true;
+        if (string.IsNullOrWhiteSpace(processName)) return false;
         if (_config.Settings.AppProtectionRules.TryGetValue(processName, out bool val))
         {
             return val;
@@ -314,9 +314,9 @@ public class AudioEngine : IMMNotificationClient, IDisposable
         if (CommunicationApps.Contains(processName)) return true;
         // Known music players default to false (Bypassed so music can blast)
         if (MusicApps.Contains(processName)) return false;
-        // When App-Specific limiting is active, other apps default to bypassed (false)
-        // When global limiting is active, other apps default to protected (true)
-        return !_config.Settings.AppFilteringEnabled;
+        // Unconfigured apps default to Bypassed (false) so that per-app status
+        // remains rock-solid and 100% synchronized whether App-Specific mode is ON or OFF.
+        return false;
     }
 
     public List<AppSessionInfo> GetDiscoverableAudioApps()
@@ -1024,7 +1024,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                         {
                             // In Master mode or disabled: PermadB limits strictly via the C++ APO DLL.
                             // If any app was previously clamped in App-Specific mode, restore to 1.0f once.
-                            if (appVol < 0.98f && (_clampedApps.ContainsKey(procName) || _config.Settings.AppProtectionRules.ContainsKey(procName)))
+                            if (appVol < 0.98f && (_clampedApps.ContainsKey(procName) || _config.Settings.AppProtectionRules.ContainsKey(procName) || CommunicationApps.Contains(procName)))
                             {
                                 s.SimpleAudioVolume.Volume = 1.0f;
                                 appVol = 1.0f;

@@ -497,9 +497,14 @@ public class DashboardForm : Form
         };
         _chkAppFiltering.CheckedChanged += (s, e) =>
         {
-            _config.Settings.AppFilteringEnabled = _chkAppFiltering.Checked;
-            _config.Save();
-            _engine.EnforceVolumeCeiling();
+            if (_config.Settings.AppFilteringEnabled != _chkAppFiltering.Checked)
+            {
+                _engine.ToggleAppFiltering(_chkAppFiltering.Checked);
+            }
+            if (_chkAppMode != null && _chkAppMode.Checked != _chkAppFiltering.Checked)
+            {
+                _chkAppMode.Checked = _chkAppFiltering.Checked;
+            }
         };
 
         var btnSelectApps = new Button
@@ -565,8 +570,15 @@ public class DashboardForm : Form
         };
         _chkAppMode.CheckedChanged += (s, e) =>
         {
-            _engine.ToggleAppFiltering(_chkAppMode.Checked);
-            _chkAppFiltering.Checked = _chkAppMode.Checked;
+            if (_config.Settings.AppFilteringEnabled != _chkAppMode.Checked)
+            {
+                _engine.ToggleAppFiltering(_chkAppMode.Checked);
+            }
+            if (_chkAppFiltering != null && _chkAppFiltering.Checked != _chkAppMode.Checked)
+            {
+                _chkAppFiltering.Checked = _chkAppMode.Checked;
+            }
+            PopulateAppManagerRows();
         };
 
         var appModeSub = new Label
