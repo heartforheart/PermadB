@@ -150,7 +150,6 @@ public class AudioEngine : IMMNotificationClient, IDisposable
     // Process name and peak tracking for active WASAPI audio sessions
     private readonly ConcurrentDictionary<int, string> _processNameCache = new();
     private readonly ConcurrentDictionary<string, float> _appSmoothedPeak = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentDictionary<string, byte> _clampedApps = new(StringComparer.OrdinalIgnoreCase);
     private DateTime _lastProtectedAudioTime = DateTime.MinValue;
 
     // Voice communication applications where speech intelligibility must NEVER be crushed or muted
@@ -283,7 +282,8 @@ public class AudioEngine : IMMNotificationClient, IDisposable
         if (string.IsNullOrWhiteSpace(processName)) return;
         _config.Settings.AppProtectionRules[processName] = isProtected;
         _config.Save();
-        _lastSessionScan = DateTime.MinValue; // Force immediate re-scan and volume update!
+        _lastProtectedAudioTime = DateTime.MinValue;
+        _lastSessionScan = DateTime.MinValue; // Force immediate re-scan!
         PostToAudioThread(() =>
         {
             InternalEnforceCeiling();
@@ -295,6 +295,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
     {
         _config.Settings.AppFilteringEnabled = enabled ?? !_config.Settings.AppFilteringEnabled;
         _config.Save();
+        _lastProtectedAudioTime = DateTime.MinValue;
         _lastSessionScan = DateTime.MinValue; // Force immediate re-scan!
         PostToAudioThread(() =>
         {
@@ -769,11 +770,17 @@ public class AudioEngine : IMMNotificationClient, IDisposable
             if (_config.Settings.AppFilteringEnabled && isEnabled)
             {
                 // When Application-Specific Limiting is enabled:
-                // Master APO runs in transparent peak-limiter mode (-1.0 dBFS / 0.8912 linear)
-                // so bypassed applications (like music in Brave or Spotify) can blast at 100% full volume!
-                // Protected applications (like Discord or capped apps) are held strictly at their safe ceiling scalar.
-                linear = 0.8912509f;
-                dbfs = -1.0f;
+                // Check if any protected application (e.g. Discord, or Brave when marked Limited) is actively outputting audio.
+                // If yes: the APO dynamically clamps the stream to the safe acoustic preset ceiling.
+                // If no (only bypassed apps like music are playing): the APO runs in transparent peak-limiter mode (-1.0 dBFS)
+                // so music blasts freely at 100% full volume!
+                // Limiting is executed 100% inside audiodg.exe via PermadBApo.dll — ZERO volume mixer manipulation!
+                bool isProtectedAppActive = (DateTime.UtcNow - _lastProtectedAudioTime).TotalMilliseconds < 1500;
+                if (!isProtectedAppActive)
+                {
+                    linear = 0.8912509f;
+                    dbfs = -1.0f;
+                }
             }
 
             int enabledInt = isEnabled ? 1 : 0;
@@ -993,44 +1000,26 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                         bool isProt = IsAppProtected(procName);
                         bool isAppClamped = false;
 
-                        if (_config.Settings.Enabled && _config.Settings.AppFilteringEnabled)
+                        bool isAppActive = rawAppPeak > 0.001f || smoothedPeak > 0.001f;
+                        if (isProt && isAppActive)
                         {
-                            float linearCeiling = GetActivePresetLinearCeiling();
-                            if (isProt)
+                            _lastProtectedAudioTime = DateTime.UtcNow;
+                        }
+
+                        if (_config.Settings.Enabled)
+                        {
+                            if (_config.Settings.AppFilteringEnabled)
                             {
-                                // Protected application: held rock-solid at the acoustic preset ceiling scalar.
-                                // Zero transient pumping up and down!
-                                if (Math.Abs(appVol - linearCeiling) > 0.02f)
-                                {
-                                    s.SimpleAudioVolume.Volume = linearCeiling;
-                                    appVol = linearCeiling;
-                                }
-                                isAppClamped = true;
-                                _clampedApps[procName] = 1;
+                                isAppClamped = isProt && isAppActive && isClamping;
                             }
                             else
                             {
-                                // Bypassed application (e.g. Brave or Spotify playing music):
-                                // Full 100% scale so music blasts freely without being kept at the preset level!
-                                if (appVol < 0.98f)
-                                {
-                                    s.SimpleAudioVolume.Volume = 1.0f;
-                                    appVol = 1.0f;
-                                }
-                                _clampedApps.TryRemove(procName, out _);
+                                isAppClamped = isClamping;
                             }
                         }
-                        else
-                        {
-                            // In Master mode or disabled: PermadB limits strictly via the C++ APO DLL.
-                            // If any app was previously clamped in App-Specific mode, restore to 1.0f once.
-                            if (appVol < 0.98f && (_clampedApps.ContainsKey(procName) || _config.Settings.AppProtectionRules.ContainsKey(procName) || CommunicationApps.Contains(procName)))
-                            {
-                                s.SimpleAudioVolume.Volume = 1.0f;
-                                appVol = 1.0f;
-                                _clampedApps.TryRemove(procName, out _);
-                            }
-                        }
+
+                        // INVARIANT: PermadB NEVER modifies Windows Volume Mixer sliders (s.SimpleAudioVolume.Volume).
+                        // All digital limiting is executed deterministically on raw PCM inside audiodg.exe via PermadBApo.dll.
 
                         appSessionsList.Add(new AppSessionInfo
                         {
@@ -1048,6 +1037,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                         });
                     }
                     _cachedAppSessions = appSessionsList;
+                    InternalSendCeilingToApo();
                 }
                 catch { }
             }
