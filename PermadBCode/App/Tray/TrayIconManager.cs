@@ -184,6 +184,16 @@ public class TrayIconManager : IDisposable
         };
         _contextMenu.Items.Add(dashboardItem);
 
+        var donateItem = new ToolStripMenuItem("☕ Support on Ko-fi...", null, (s, e) =>
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo("https://ko-fi.com/unsever") { UseShellExecute = true });
+            }
+            catch { }
+        });
+        _contextMenu.Items.Add(donateItem);
+
         // Strict Ceiling Guard
         _strictLockItem = new ToolStripMenuItem("🔒 Strict Ceiling Guard", null, (s, e) =>
         {

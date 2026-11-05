@@ -2,6 +2,12 @@
 
 <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /> <img src="https://img.shields.io/badge/Platform-Windows%2011%20%7C%2010-0078D6?logo=windows&logoColor=white" alt="Windows 11 / 10" /> <img src="https://img.shields.io/badge/.NET-9.0-512BD4?logo=dotnet&logoColor=white" alt=".NET 9.0" /> <img src="https://img.shields.io/badge/UI-React%2019%20%2B%20Vite-61DAFB?logo=react&logoColor=black" alt="React 19" /> <img src="https://img.shields.io/badge/Audio-WASAPI%20CoreAudio-10B981" alt="WASAPI CoreAudio" /> <img src="https://img.shields.io/badge/Limiter-DSP%20%26%20APO%20Verified-10B981" alt="Limiter Verified" />
 
+<p align="center">
+  <a href="https://ko-fi.com/unsever">
+    <img src="https://img.shields.io/badge/Support_on_Ko--fi-ff5e5b?style=for-the-badge&logo=kofi&logoColor=white" alt="Support on Ko-fi" />
+  </a>
+</p>
+
 **An open-source, always-on Windows system tray utility that enforces strict digital peak ceilings directly within the Windows Audio Engine to prevent sudden deafening audio spikes.**
 
 ---
@@ -376,6 +382,18 @@ If you are a Windows audio/driver engineer, packaging specialist, or have experi
 
 * Open an Issue or Discussion on GitHub to collaborate on INF packaging and testing.
 * If you or your organization can sponsor or assist with Microsoft Partner Center EV code signing, please get in touch!
+
+---
+
+## ☕ Support the Project
+
+PermadB is 100% free, private, and open-source. If PermadB protects your ears, prevents tinnitus, and saves you from sudden deafening audio spikes, consider supporting its independent development on Ko-fi:
+
+<p align="center">
+  <a href="https://ko-fi.com/unsever">
+    <img src="https://img.shields.io/badge/Support_on_Ko--fi-ff5e5b?style=for-the-badge&logo=kofi&logoColor=white" alt="Support on Ko-fi" />
+  </a>
+</p>
 
 ---
 

@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
@@ -163,8 +164,30 @@ public class DashboardForm : Form
         _closeButton.FlatAppearance.MouseOverBackColor = Color.FromArgb(64, 75, 96);
         _closeButton.Click += (s, e) => this.Hide();
 
+        var donateButton = new Button
+        {
+            Text = "☕ Donate",
+            Font = new Font("Segoe UI", 7.5f, FontStyle.Bold),
+            Size = new Size(68, 24),
+            Location = new Point(300, 11),
+            FlatStyle = FlatStyle.Flat,
+            BackColor = Color.FromArgb(255, 94, 91),
+            ForeColor = Color.White,
+            Cursor = Cursors.Hand
+        };
+        donateButton.FlatAppearance.BorderSize = 0;
+        donateButton.Click += (s, e) =>
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo("https://ko-fi.com/unsever") { UseShellExecute = true });
+            }
+            catch { }
+        };
+
         _headerPanel.Controls.Add(_titleLabel);
         _headerPanel.Controls.Add(_subtitleLabel);
+        _headerPanel.Controls.Add(donateButton);
         _headerPanel.Controls.Add(_closeButton);
         this.Controls.Add(_headerPanel);
 

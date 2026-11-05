@@ -448,6 +448,31 @@ export default function App() {
             <Power size={18} />
             {settings.enabled ? 'SHIELD: ACTIVE' : 'SHIELD: BYPASSED'}
           </button>
+
+          <a
+            href="https://ko-fi.com/unsever"
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '6px',
+              background: 'linear-gradient(135deg, #ff5e5b, #ff7849)',
+              color: '#ffffff',
+              padding: '8px 14px',
+              borderRadius: '8px',
+              fontSize: '0.82rem',
+              fontWeight: '600',
+              textDecoration: 'none',
+              boxShadow: '0 2px 8px rgba(255, 94, 91, 0.25)',
+              transition: 'all 0.2s ease',
+              flexShrink: 0
+            }}
+            title="Support PermadB development on Ko-fi"
+          >
+            <span>☕</span>
+            <span>Support Dev</span>
+          </a>
         </div>
       </header>
 
@@ -1077,6 +1102,39 @@ export default function App() {
           </div>
         </section>
       </main>
+
+      {/* Footer Support Banner */}
+      <footer style={{
+        marginTop: '2.5rem',
+        padding: '1.5rem',
+        textAlign: 'center',
+        borderTop: '1px solid rgba(255, 255, 255, 0.08)',
+        color: '#94a3b8',
+        fontSize: '0.85rem'
+      }}>
+        <p style={{ margin: '0 0 0.6rem 0' }}>
+          PermadB is 100% free, private, and open-source hearing protection.
+        </p>
+        <a 
+          href="https://ko-fi.com/unsever" 
+          target="_blank" 
+          rel="noopener noreferrer"
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '8px',
+            background: 'rgba(255, 94, 91, 0.12)',
+            color: '#ff5e5b',
+            border: '1px solid rgba(255, 94, 91, 0.3)',
+            borderRadius: '8px',
+            padding: '6px 16px',
+            fontWeight: '600',
+            textDecoration: 'none'
+          }}
+        >
+          ☕ Support Developer on Ko-fi
+        </a>
+      </footer>
     </div>
   );
 }
