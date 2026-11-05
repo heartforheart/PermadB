@@ -147,9 +147,10 @@ public class AudioEngine : IMMNotificationClient, IDisposable
     private DateTime _lastSessionScan = DateTime.MinValue;
     private List<AppSessionInfo> _cachedAppSessions = new();
 
-    // Process name and peak tracking for active WASAPI audio sessions (telemetry only)
+    // Process name and peak tracking for active WASAPI audio sessions
     private readonly ConcurrentDictionary<int, string> _processNameCache = new();
     private readonly ConcurrentDictionary<string, float> _appSmoothedPeak = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, DateTime> _appLastClampTime = new(StringComparer.OrdinalIgnoreCase);
 
     // Voice communication applications where speech intelligibility must NEVER be crushed or muted
     public static readonly HashSet<string> CommunicationApps = new(StringComparer.OrdinalIgnoreCase)
@@ -752,6 +753,14 @@ public class AudioEngine : IMMNotificationClient, IDisposable
             linear = Math.Clamp(linear, 0.001f, 0.8912509f);
             float dbfs = 20.0f * (float)Math.Log10(linear);
 
+            if (_config.Settings.AppFilteringEnabled && isEnabled)
+            {
+                // In App-Specific mode, bypassed apps (like music) blast freely at 100%.
+                // The master APO runs at transparent peak-limiter threshold (-1.0 dBFS) to prevent DAC inter-sample clipping.
+                linear = 0.8912509f;
+                dbfs = -1.0f;
+            }
+
             int enabledInt = isEnabled ? 1 : 0;
 
             if (_telemetryAcc == null)
@@ -966,6 +975,57 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                         var appEstPeakSpl = Math.Clamp(profile.EstimatedMaxDbSpl + appPeakDbfs + masterDbAtten, 25.0f, 120.0f);
                         var appEstContinuousSpl = Math.Clamp(appEstPeakSpl - crestFactor, 25.0f, 105.0f);
 
+                        bool isProt = IsAppProtected(procName);
+                        bool isAppClamped = false;
+
+                        if (_config.Settings.Enabled && _config.Settings.AppFilteringEnabled)
+                        {
+                            float ceilingScalar = Math.Clamp(profile.SafeCeilingPercent / 100.0f, 0.05f, 1.0f);
+                            if (isProt)
+                            {
+                                // Protected app: volume ceiling is strictly capped at safe ceiling and held steady
+                                if (appVol > ceilingScalar + 0.01f)
+                                {
+                                    s.SimpleAudioVolume.Volume = ceilingScalar;
+                                    appVol = ceilingScalar;
+                                    isAppClamped = true;
+                                }
+                                else if (appEstContinuousSpl > profile.TargetSafeDbSpl + 1.0f)
+                                {
+                                    // Transient spike / loud scream: clamp down further to maintain safe sound pressure
+                                    float excessDb = appEstContinuousSpl - profile.TargetSafeDbSpl;
+                                    float safeScalar = Math.Clamp(ceilingScalar * (float)Math.Pow(10.0, -excessDb / 20.0), 0.05f, ceilingScalar);
+                                    if (appVol > safeScalar)
+                                    {
+                                        s.SimpleAudioVolume.Volume = safeScalar;
+                                        appVol = safeScalar;
+                                        isAppClamped = true;
+                                        _appLastClampTime[procName] = DateTime.UtcNow;
+                                    }
+                                }
+                                else if (_appLastClampTime.TryGetValue(procName, out var lastClamped))
+                                {
+                                    // Smoothly recover back up TO CEILING SCALAR (never above it!) after transient spike subsides
+                                    if ((DateTime.UtcNow - lastClamped).TotalSeconds > 1.5 && appVol < ceilingScalar)
+                                    {
+                                        float nextVol = Math.Min(ceilingScalar, appVol + 0.05f);
+                                        s.SimpleAudioVolume.Volume = nextVol;
+                                        appVol = nextVol;
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                // Bypassed app (e.g. music): If it was previously clamped, restore to 100% full scale so music blasts freely!
+                                if (appVol < 0.99f && _appLastClampTime.ContainsKey(procName))
+                                {
+                                    s.SimpleAudioVolume.Volume = 1.0f;
+                                    appVol = 1.0f;
+                                    _appLastClampTime.TryRemove(procName, out _);
+                                }
+                            }
+                        }
+
                         appSessionsList.Add(new AppSessionInfo
                         {
                             ProcessId = pid,
@@ -976,8 +1036,8 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                             PeakDbfs = (float)Math.Round(appPeakDbfs, 1),
                             EstimatedDbSpl = (float)Math.Round(appEstContinuousSpl, 1),
                             IsMuted = appMute,
-                            IsClamped = false,
-                            IsProtected = true,
+                            IsClamped = isAppClamped,
+                            IsProtected = isProt,
                             IsUnsafe = appEstContinuousSpl > profile.TargetSafeDbSpl
                         });
                     }

@@ -26,10 +26,12 @@ public class TrayIconManager : IDisposable
     private ToolStripMenuItem _saveCustom1Item = null!;
     private ToolStripMenuItem _saveCustom2Item = null!;
     private ToolStripMenuItem _strictLockItem = null!;
+    private ToolStripMenuItem _appFilteringItem = null!;
     private ToolStripMenuItem _allDevicesItem = null!;
     private ToolStripMenuItem _startupItem = null!;
 
     public event Action? OnOpenDashboardRequested;
+    public event Action? OnOpenAppManagerRequested;
     public event Action? OnExitRequested;
 
     public TrayIconManager(ConfigManager config, AudioEngine engine)
@@ -211,6 +213,11 @@ public class TrayIconManager : IDisposable
         });
         _contextMenu.Items.Add(_strictLockItem);
 
+        // App-Specific Limiting Submenu
+        _appFilteringItem = new ToolStripMenuItem("🎯 App-Specific Limiting ▶");
+        _appFilteringItem.DropDownOpening += (s, e) => PopulateAppFilteringMenu();
+        _contextMenu.Items.Add(_appFilteringItem);
+
         // Protect All Devices (PA / DJ / Headphones)
         _allDevicesItem = new ToolStripMenuItem("🌐 Protect All Devices (PA/DJ/Headphones)", null, (s, e) =>
         {
@@ -312,6 +319,7 @@ public class TrayIconManager : IDisposable
             _saveCustom2Item.Text = $"💾 Save Current ({profile.SafeCeilingPercent:F0}%) as Custom 2 (Highest)";
 
             _strictLockItem.Checked = _config.Settings.StrictVolumeLock;
+            _appFilteringItem.Text = _config.Settings.AppFilteringEnabled ? "🎯 App-Specific Limiting [ON] ▶" : "🎯 App-Specific Limiting [OFF] ▶";
             _allDevicesItem.Checked = _config.Settings.ApplyToAllDevices;
             _startupItem.Checked = StartupManager.IsStartupEnabled();
 
@@ -324,6 +332,143 @@ public class TrayIconManager : IDisposable
         catch (Exception ex)
         {
             Console.WriteLine($"[Tray] Error updating appearance: {ex.Message}");
+        }
+    }
+
+    private void PopulateAppFilteringMenu()
+    {
+        try
+        {
+            _appFilteringItem.DropDownItems.Clear();
+
+            // 1. Mode toggle
+            var modeToggle = new ToolStripMenuItem("🛡️ Enable App-Specific Limiting Mode")
+            {
+                Checked = _config.Settings.AppFilteringEnabled,
+                Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold)
+            };
+            modeToggle.Click += (s, e) =>
+            {
+                _engine.ToggleAppFiltering();
+                UpdateTrayAppearance();
+                if (_config.Settings.AppFilteringEnabled)
+                {
+                    ShowNotification("App-Specific Limiting Active", "Only chosen apps (e.g. Discord) are clamped. Bypassed apps blast freely!");
+                }
+                else
+                {
+                    ShowNotification("Master Limiter Active", "System-wide protection active for all applications.");
+                }
+                PopulateAppFilteringMenu();
+            };
+            _appFilteringItem.DropDownItems.Add(modeToggle);
+            _appFilteringItem.DropDownItems.Add(new ToolStripSeparator());
+
+            // 2. Apps Header
+            var header = new ToolStripMenuItem("Choose Apps to Limit (✓ = Clamped, Blank = Bypassed):")
+            {
+                Enabled = false,
+                Font = new Font(SystemFonts.DefaultFont, FontStyle.Italic)
+            };
+            _appFilteringItem.DropDownItems.Add(header);
+
+            // 3. Applications list
+            var apps = _engine.GetDiscoverableAudioApps();
+            if (apps.Count > 0)
+            {
+                foreach (var app in apps)
+                {
+                    string procName = app.ProcessName;
+                    bool isProt = _engine.IsAppProtected(procName);
+                    string playingMarker = app.PeakValue > 0.001f ? " 🔊" : "";
+                    string label = $"{procName}{playingMarker} — {(isProt ? "Limited" : "Bypassed")}";
+
+                    var item = new ToolStripMenuItem(label)
+                    {
+                        Checked = isProt
+                    };
+                    item.Click += (s, e) =>
+                    {
+                        bool newProt = !_engine.IsAppProtected(procName);
+                        _engine.SetAppProtection(procName, newProt);
+                        ShowNotification("App Protection Updated", $"{procName}: {(newProt ? "🛡️ Clamped / Limited" : "⚡ Bypassed (Full Scale)")}");
+                        PopulateAppFilteringMenu();
+                    };
+                    _appFilteringItem.DropDownItems.Add(item);
+                }
+            }
+            else
+            {
+                _appFilteringItem.DropDownItems.Add(new ToolStripMenuItem("No audio apps detected yet") { Enabled = false });
+            }
+
+            _appFilteringItem.DropDownItems.Add(new ToolStripSeparator());
+
+            var addApp = new ToolStripMenuItem("➕ Add App Process Name...", null, (s, e) =>
+            {
+                PromptAddProcess();
+            });
+            _appFilteringItem.DropDownItems.Add(addApp);
+
+            _appFilteringItem.DropDownItems.Add(new ToolStripSeparator());
+
+            var manageInDash = new ToolStripMenuItem("📊 Open App Manager in Dashboard...", null, (s, e) =>
+            {
+                OnOpenAppManagerRequested?.Invoke();
+            });
+            _appFilteringItem.DropDownItems.Add(manageInDash);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Tray] Error populating app filtering menu: {ex.Message}");
+        }
+    }
+
+    private void PromptAddProcess()
+    {
+        using var promptForm = new Form
+        {
+            Width = 380,
+            Height = 180,
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            Text = "Add Application to Limiter",
+            StartPosition = FormStartPosition.CenterScreen,
+            MaximizeBox = false,
+            MinimizeBox = false,
+            BackColor = Color.FromArgb(15, 23, 42),
+            ForeColor = Color.White
+        };
+
+        var lbl = new Label { Left = 20, Top = 16, Width = 320, Text = "Process Name (e.g. Discord, Spotify, cs2, chrome):", Font = new Font("Segoe UI", 8.5f) };
+        var txt = new TextBox { Left = 20, Top = 40, Width = 320, BackColor = Color.FromArgb(30, 41, 59), ForeColor = Color.White, Font = new Font("Segoe UI", 9.5f) };
+        var chk = new CheckBox { Left = 20, Top = 72, Width = 320, Text = "Limit this app (Uncheck to bypass so music blasts)", Checked = true, Font = new Font("Segoe UI", 8.5f) };
+
+        var btnOk = new Button { Text = "Add", Left = 170, Width = 80, Top = 104, DialogResult = DialogResult.OK, BackColor = Color.FromArgb(16, 185, 129), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
+        btnOk.FlatAppearance.BorderSize = 0;
+        var btnCancel = new Button { Text = "Cancel", Left = 260, Width = 80, Top = 104, DialogResult = DialogResult.Cancel, BackColor = Color.FromArgb(51, 65, 85), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
+        btnCancel.FlatAppearance.BorderSize = 0;
+
+        promptForm.Controls.Add(lbl);
+        promptForm.Controls.Add(txt);
+        promptForm.Controls.Add(chk);
+        promptForm.Controls.Add(btnOk);
+        promptForm.Controls.Add(btnCancel);
+        promptForm.AcceptButton = btnOk;
+        promptForm.CancelButton = btnCancel;
+
+        if (promptForm.ShowDialog() == DialogResult.OK)
+        {
+            var pName = txt.Text.Trim();
+            if (pName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+            {
+                pName = pName.Substring(0, pName.Length - 4);
+            }
+            if (!string.IsNullOrWhiteSpace(pName))
+            {
+                _engine.SetAppProtection(pName, chk.Checked);
+                ShowNotification("Application Added", $"{pName} configured as {(chk.Checked ? "🛡️ Limited" : "⚡ Bypassed")}.");
+                PopulateAppFilteringMenu();
+            }
         }
     }
 

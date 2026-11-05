@@ -189,6 +189,61 @@ export default function App() {
 
 
 
+  // Toggle App-Specific Selective Limiting (Discord only, music blast)
+  const toggleAppFiltering = async () => {
+    const nextVal = !settings.appFilteringEnabled;
+    setSettings(prev => ({ ...prev, appFilteringEnabled: nextVal }));
+    try {
+      await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ appFilteringEnabled: nextVal })
+      });
+      fetchData();
+    } catch (e) {}
+  };
+
+  // Toggle Per-App Protection (e.g. Discord Protected vs Spotify Bypassed)
+  const handleToggleAppProtection = async (processName, currentVal) => {
+    const nextVal = !currentVal;
+    setSettings(prev => ({
+      ...prev,
+      appProtectionRules: {
+        ...(prev.appProtectionRules || {}),
+        [processName]: nextVal
+      }
+    }));
+    setMetrics(prev => ({
+      ...prev,
+      appSessions: (prev.appSessions || []).map(s =>
+        s.processName.toLowerCase() === processName.toLowerCase()
+          ? { ...s, isProtected: nextVal }
+          : s
+      )
+    }));
+    try {
+      await fetch('/api/apps/protect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ processName, isProtected: nextVal })
+      });
+    } catch (e) {}
+  };
+
+  const [customAppInput, setCustomAppInput] = useState('');
+  const [showAddApp, setShowAddApp] = useState(false);
+
+  const handleAddCustomApp = async () => {
+    let pName = customAppInput.trim();
+    if (pName.toLowerCase().endsWith('.exe')) {
+      pName = pName.slice(0, -4);
+    }
+    if (!pName) return;
+    await handleToggleAppProtection(pName, false);
+    setCustomAppInput('');
+    setShowAddApp(false);
+  };
+
   // Toggle Windows Autostart
   const toggleStartWithWindows = async () => {
     const nextVal = !settings.startWithWindows;
@@ -779,14 +834,79 @@ export default function App() {
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
               <span className={`card-badge ${(metrics.appSessions?.length || 0) > 0 ? 'green' : 'gray'}`}>
-                {metrics.appSessions?.length || 0} Apps Active
+                {metrics.appSessions?.length || 0} Apps Monitored
               </span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', color: settings.appFilteringEnabled ? '#38bdf8' : '#94a3b8' }}>
+                <span style={{ fontWeight: settings.appFilteringEnabled ? '600' : 'normal' }}>App-Specific Mode</span>
+                <input 
+                  type="checkbox" 
+                  className="toggle-checkbox" 
+                  checked={settings.appFilteringEnabled ?? false} 
+                  onChange={toggleAppFiltering} 
+                  title="When enabled, only chosen apps are clamped; bypassed music blasts freely at 100%"
+                />
+              </div>
             </div>
           </div>
 
           <p style={{ fontSize: '0.82rem', color: '#94a3b8', margin: '0 0 0.85rem 0' }}>
             Actively monitors running audio sessions and real-time sound pressure. All digital limiting is performed deterministically on raw PCM audio in <code>audiodg.exe</code> via PermadBApo.dll — zero manipulation of Windows volume mixer sliders.
           </p>
+
+          {/* Custom process adder */}
+          <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', marginBottom: '1rem', alignItems: 'center' }}>
+            <button
+              onClick={() => setShowAddApp(!showAddApp)}
+              style={{
+                background: 'rgba(255, 255, 255, 0.08)',
+                color: '#f8fafc',
+                border: '1px solid rgba(255, 255, 255, 0.15)',
+                borderRadius: '6px',
+                padding: '4px 12px',
+                fontSize: '0.8rem',
+                fontWeight: '600',
+                cursor: 'pointer'
+              }}
+            >
+              ➕ Add App Process...
+            </button>
+
+            {showAddApp && (
+              <div style={{ display: 'flex', gap: '6px', alignItems: 'center', width: '100%', marginTop: '6px' }}>
+                <input
+                  type="text"
+                  placeholder="e.g. Discord, Spotify, cs2, chrome..."
+                  value={customAppInput}
+                  onChange={e => setCustomAppInput(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') handleAddCustomApp(); }}
+                  style={{
+                    background: '#0f172a',
+                    border: '1px solid #334155',
+                    borderRadius: '6px',
+                    color: '#fff',
+                    padding: '5px 10px',
+                    fontSize: '0.82rem',
+                    flex: '1'
+                  }}
+                />
+                <button
+                  onClick={handleAddCustomApp}
+                  style={{
+                    background: '#10b981',
+                    color: '#fff',
+                    border: 'none',
+                    borderRadius: '6px',
+                    padding: '5px 14px',
+                    fontSize: '0.82rem',
+                    fontWeight: 'bold',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Add
+                </button>
+              </div>
+            )}
+          </div>
 
           {(!metrics.appSessions || metrics.appSessions.length === 0) ? (
             <div style={{
@@ -840,6 +960,22 @@ export default function App() {
                           </div>
                           <div style={{ fontSize: '0.7rem', color: '#64748b', display: 'flex', alignItems: 'center', gap: '6px' }}>
                             <span>PID {app.processId} {app.isMuted ? '• Muted' : ''}</span>
+                            <button
+                              onClick={() => handleToggleAppProtection(app.processName, app.isProtected ?? true)}
+                              style={{
+                                background: (app.isProtected ?? true) ? 'rgba(16, 185, 129, 0.15)' : 'rgba(148, 163, 184, 0.15)',
+                                color: (app.isProtected ?? true) ? '#34d399' : '#94a3b8',
+                                border: (app.isProtected ?? true) ? '1px solid rgba(16, 185, 129, 0.35)' : '1px solid rgba(148, 163, 184, 0.25)',
+                                borderRadius: '4px',
+                                padding: '1px 6px',
+                                fontSize: '0.68rem',
+                                fontWeight: '600',
+                                cursor: 'pointer'
+                              }}
+                              title={(app.isProtected ?? true) ? "PermadB limits this app. Click to bypass." : "App is bypassed. Click to limit."}
+                            >
+                              {(app.isProtected ?? true) ? '🛡️ Limited' : '⚡ Bypassed'}
+                            </button>
                           </div>
                         </div>
                       </div>
