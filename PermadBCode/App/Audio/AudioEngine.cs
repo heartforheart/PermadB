@@ -755,16 +755,12 @@ public class AudioEngine : IMMNotificationClient, IDisposable
 
             if (_config.Settings.AppFilteringEnabled && isEnabled)
             {
-                // In App-Specific mode:
-                // If a protected application (e.g. Discord, Brave) is actively producing audio
-                // or was active within the 1.5s hangover window, enforce the strict safe ceiling via the C++ APO DLL!
-                // If only bypassed applications (e.g. Spotify / music) are playing, allow full-scale blast (-1.0 dBFS)!
-                bool protectedActive = (DateTime.UtcNow - _lastProtectedAudioTime).TotalSeconds < 1.5;
-                if (!protectedActive)
-                {
-                    linear = 0.8912509f;
-                    dbfs = -1.0f;
-                }
+                // When Application-Specific Limiting is enabled:
+                // Master APO runs in transparent peak-limiter mode (-1.0 dBFS / 0.8912 linear)
+                // so bypassed applications (like music in Brave or Spotify) can blast at 100% full volume!
+                // Protected applications (like Discord or capped apps) are held strictly at their safe ceiling scalar.
+                linear = 0.8912509f;
+                dbfs = -1.0f;
             }
 
             int enabledInt = isEnabled ? 1 : 0;
@@ -982,12 +978,43 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                         var appEstContinuousSpl = Math.Clamp(appEstPeakSpl - crestFactor, 25.0f, 105.0f);
 
                         bool isProt = IsAppProtected(procName);
-                        if (isProt && rawAppPeak > 0.001f)
-                        {
-                            _lastProtectedAudioTime = DateTime.UtcNow;
-                        }
+                        bool isAppClamped = false;
 
-                        bool isGuardedNow = isProt && (_config.Settings.AppFilteringEnabled ? ((DateTime.UtcNow - _lastProtectedAudioTime).TotalSeconds < 1.5) : true);
+                        if (_config.Settings.Enabled && _config.Settings.AppFilteringEnabled)
+                        {
+                            float ceilingScalar = Math.Clamp(profile.SafeCeilingPercent / 100.0f, 0.10f, 1.0f);
+                            if (isProt)
+                            {
+                                // Protected application: held rock-solid at the safe ceiling scalar.
+                                // Zero transient pumping up and down!
+                                if (Math.Abs(appVol - ceilingScalar) > 0.02f)
+                                {
+                                    s.SimpleAudioVolume.Volume = ceilingScalar;
+                                    appVol = ceilingScalar;
+                                }
+                                isAppClamped = true;
+                            }
+                            else
+                            {
+                                // Bypassed application (e.g. Brave or Spotify playing music):
+                                // Full 100% scale so music blasts freely without being kept at the preset level!
+                                if (appVol < 0.98f)
+                                {
+                                    s.SimpleAudioVolume.Volume = 1.0f;
+                                    appVol = 1.0f;
+                                }
+                            }
+                        }
+                        else
+                        {
+                            // In Master mode or disabled: PermadB limits strictly via the C++ APO DLL.
+                            // If any app was previously clamped in App-Specific mode, restore to 1.0f once.
+                            if (appVol < 0.98f && _config.Settings.AppProtectionRules.ContainsKey(procName))
+                            {
+                                s.SimpleAudioVolume.Volume = 1.0f;
+                                appVol = 1.0f;
+                            }
+                        }
 
                         appSessionsList.Add(new AppSessionInfo
                         {
@@ -999,7 +1026,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                             PeakDbfs = (float)Math.Round(appPeakDbfs, 1),
                             EstimatedDbSpl = (float)Math.Round(appEstContinuousSpl, 1),
                             IsMuted = appMute,
-                            IsClamped = isGuardedNow && isClamping,
+                            IsClamped = isAppClamped,
                             IsProtected = isProt,
                             IsUnsafe = appEstContinuousSpl > profile.TargetSafeDbSpl
                         });
