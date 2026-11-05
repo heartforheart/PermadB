@@ -375,12 +375,29 @@ Realistically, reaching full production deployment is divided into two clear pha
 
 ---
 
-### 🤝 Want to Help? Reach Out!
+## 🗺️ Cross-Platform Roadmap & Ecosystem Partnerships
+
+While PermadB currently delivers native, zero-latency brickwall limiting for Windows 11/10 via our CoreAudio APO (`audiodg.exe`), our mission is universal hearing protection across every screen and speaker you use.
+
+Mobile and Unix-like platforms have unique audio routing and sandboxing architectures:
+* 🤖 **Android**: Developing an Accessibility & `AudioManager` volume ceiling governor for stock devices, alongside root/Magisk NDK HAL modules for system-wide raw PCM lookahead limiting.
+* 🍎 **iOS**: Investigating background `HealthKit` Headphone Audio Exposure dose tracking, MDM configuration volume limit policies, and companion audio player integration within Apple's security sandbox.
+* 🍏 **macOS**: Architecting a CoreAudio HAL `AudioServerPlugin` (virtual aggregate audio driver) to pass system-wide audio through our lookahead limiter DSP with native menu bar controls.
+* 🐧 **Linux**: Building native PipeWire SPA filter-chain nodes and PulseAudio LADSPA limiter sinks for modern desktop distributions (Fedora, Arch, Ubuntu, SteamOS).
+
+### 🤝 Want to Partner or Build Together? Reach Out!
 PermadB is an open-source initiative dedicated to preventing irreversible hearing damage and tinnitus. 
 
-If you are a Windows audio/driver engineer, packaging specialist, or have experience with **Microsoft Hardware Dev Center (WHDC) attestation signing**, we would love your help to get PermadB fully signed and production-ready! 
+Are you an audio software engineer, driver developer, or platform specialist working on:
+* **Android AudioFX / NDK / Accessibility Services**
+* **iOS CoreAudio / HealthKit / MDM Configuration Policies**
+* **macOS CoreAudio HAL AudioServerPlugins / Swift**
+* **Linux PipeWire / PulseAudio / C++ DSP Modules**
+* **Microsoft Hardware Dev Center (WHDC) & EV Attestation Signing**
 
-* Open an Issue or Discussion on GitHub to collaborate on INF packaging and testing.
+We want to collaborate with you! If you are working in this space and want to partner, contribute code, or help bring PermadB's ear-protection engine to your favorite operating system:
+* **Open an Issue or Discussion on GitHub** to pitch ideas and coordinate architecture.
+* **Submit a Pull Request** to help us scaffold platform-specific implementations.
 * If you or your organization can sponsor or assist with Microsoft Partner Center EV code signing, please get in touch!
 
 ---
