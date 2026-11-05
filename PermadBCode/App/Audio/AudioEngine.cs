@@ -150,6 +150,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
     // Process name and peak tracking for active WASAPI audio sessions
     private readonly ConcurrentDictionary<int, string> _processNameCache = new();
     private readonly ConcurrentDictionary<string, float> _appSmoothedPeak = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, byte> _clampedApps = new(StringComparer.OrdinalIgnoreCase);
     private DateTime _lastProtectedAudioTime = DateTime.MinValue;
 
     // Voice communication applications where speech intelligibility must NEVER be crushed or muted
@@ -251,6 +252,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
         }
         _config.Save();
         UpdateCachedProfile(profile);
+        _lastSessionScan = DateTime.MinValue; // Force immediate session scan & per-app volume clamp
 
         PostToAudioThread(() =>
         {
@@ -447,6 +449,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
         _config.Settings.Enabled = true;
         _config.Save();
         UpdateCachedProfile(profile);
+        _lastSessionScan = DateTime.MinValue; // Force immediate session scan & per-app volume clamp
 
         PostToAudioThread(() =>
         {
@@ -733,6 +736,21 @@ public class AudioEngine : IMMNotificationClient, IDisposable
         PostToAudioThread(InternalSendCeilingToApo);
     }
 
+    /// <summary>
+    /// Calculates the exact acoustically calibrated linear ceiling scalar for the active preset.
+    /// Clamps continuous physical dBA SPL to TargetSafeDbSpl based on estimated transducer max SPL.
+    /// </summary>
+    public float GetActivePresetLinearCeiling()
+    {
+        var profile = GetActiveProfile();
+        float maxSpl = profile.EstimatedMaxDbSpl > 50.0f ? profile.EstimatedMaxDbSpl : 100.0f;
+        float targetDbfs = profile.TargetSafeDbSpl + 11.0f - maxSpl;
+        // Strict range: [-40.0 dBFS .. -1.0 dBFS]
+        targetDbfs = Math.Clamp(targetDbfs, -40.0f, -1.0f);
+        float linear = (float)Math.Pow(10.0, targetDbfs / 20.0);
+        return Math.Clamp(linear, 0.01f, 0.8912509f);
+    }
+
     private void InternalSendCeilingToApo()
     {
         try
@@ -745,12 +763,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
             // Continuous SPL = profile.EstimatedMaxDbSpl + peakDbfs + masterDbAtten - 11.0f (crest factor)
             // To guarantee continuous SPL NEVER exceeds profile.TargetSafeDbSpl:
             // targetDbfs <= profile.TargetSafeDbSpl + 11.0f - profile.EstimatedMaxDbSpl - masterDbAtten;
-            float maxSpl = profile.EstimatedMaxDbSpl > 50.0f ? profile.EstimatedMaxDbSpl : 100.0f;
-            float targetDbfs = profile.TargetSafeDbSpl + 11.0f - maxSpl;
-            // Strict range: [-40.0 dBFS .. -1.0 dBFS]
-            targetDbfs = Math.Clamp(targetDbfs, -40.0f, -1.0f);
-            float linear = (float)Math.Pow(10.0, targetDbfs / 20.0);
-            linear = Math.Clamp(linear, 0.001f, 0.8912509f);
+            float linear = GetActivePresetLinearCeiling();
             float dbfs = 20.0f * (float)Math.Log10(linear);
 
             if (_config.Settings.AppFilteringEnabled && isEnabled)
@@ -982,17 +995,18 @@ public class AudioEngine : IMMNotificationClient, IDisposable
 
                         if (_config.Settings.Enabled && _config.Settings.AppFilteringEnabled)
                         {
-                            float ceilingScalar = Math.Clamp(profile.SafeCeilingPercent / 100.0f, 0.10f, 1.0f);
+                            float linearCeiling = GetActivePresetLinearCeiling();
                             if (isProt)
                             {
-                                // Protected application: held rock-solid at the safe ceiling scalar.
+                                // Protected application: held rock-solid at the acoustic preset ceiling scalar.
                                 // Zero transient pumping up and down!
-                                if (Math.Abs(appVol - ceilingScalar) > 0.02f)
+                                if (Math.Abs(appVol - linearCeiling) > 0.02f)
                                 {
-                                    s.SimpleAudioVolume.Volume = ceilingScalar;
-                                    appVol = ceilingScalar;
+                                    s.SimpleAudioVolume.Volume = linearCeiling;
+                                    appVol = linearCeiling;
                                 }
                                 isAppClamped = true;
+                                _clampedApps[procName] = 1;
                             }
                             else
                             {
@@ -1003,16 +1017,18 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                                     s.SimpleAudioVolume.Volume = 1.0f;
                                     appVol = 1.0f;
                                 }
+                                _clampedApps.TryRemove(procName, out _);
                             }
                         }
                         else
                         {
                             // In Master mode or disabled: PermadB limits strictly via the C++ APO DLL.
                             // If any app was previously clamped in App-Specific mode, restore to 1.0f once.
-                            if (appVol < 0.98f && _config.Settings.AppProtectionRules.ContainsKey(procName))
+                            if (appVol < 0.98f && (_clampedApps.ContainsKey(procName) || _config.Settings.AppProtectionRules.ContainsKey(procName)))
                             {
                                 s.SimpleAudioVolume.Volume = 1.0f;
                                 appVol = 1.0f;
+                                _clampedApps.TryRemove(procName, out _);
                             }
                         }
 
