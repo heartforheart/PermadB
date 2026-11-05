@@ -187,60 +187,7 @@ export default function App() {
     } catch (e) {}
   };
 
-  // Toggle App-Specific Selective Limiting (Discord only, music blast)
-  const toggleAppFiltering = async () => {
-    const nextVal = !settings.appFilteringEnabled;
-    setSettings(prev => ({ ...prev, appFilteringEnabled: nextVal }));
-    try {
-      await fetch('/api/settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ appFilteringEnabled: nextVal })
-      });
-      fetchData();
-    } catch (e) {}
-  };
 
-  // Toggle Per-App Protection (e.g. Discord Protected vs Spotify Bypassed)
-  const handleToggleAppProtection = async (processName, currentVal) => {
-    const nextVal = !currentVal;
-    setSettings(prev => ({
-      ...prev,
-      appProtectionRules: {
-        ...(prev.appProtectionRules || {}),
-        [processName]: nextVal
-      }
-    }));
-    setMetrics(prev => ({
-      ...prev,
-      appSessions: (prev.appSessions || []).map(s =>
-        s.processName.toLowerCase() === processName.toLowerCase()
-          ? { ...s, isProtected: nextVal }
-          : s
-      )
-    }));
-    try {
-      await fetch('/api/apps/protect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ processName, isProtected: nextVal })
-      });
-    } catch (e) {}
-  };
-
-  const [customAppInput, setCustomAppInput] = useState('');
-  const [showAddApp, setShowAddApp] = useState(false);
-
-  const handleAddCustomApp = async () => {
-    let pName = customAppInput.trim();
-    if (pName.toLowerCase().endsWith('.exe')) {
-      pName = pName.slice(0, -4);
-    }
-    if (!pName) return;
-    await handleToggleAppProtection(pName, false);
-    setCustomAppInput('');
-    setShowAddApp(false);
-  };
 
   // Toggle Windows Autostart
   const toggleStartWithWindows = async () => {
@@ -323,23 +270,7 @@ export default function App() {
     } catch (e) {}
   };
 
-  // Set individual app volume in Windows Sound Mixer
-  const handleSetAppVolume = async (processName, val) => {
-    const v = parseFloat(val);
-    setMetrics(prev => ({
-      ...prev,
-      appSessions: (prev.appSessions || []).map(a => 
-        a.processName === processName ? { ...a, volumePercent: v } : a
-      )
-    }));
-    try {
-      await fetch('/api/apps/volume', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ processName, volumePercent: v })
-      });
-    } catch (e) {}
-  };
+
 
   // Set Master Volume
   const handleVolumeChange = async (val) => {
@@ -837,90 +768,25 @@ export default function App() {
           </div>
         </section>
 
-        {/* Full Row: Active Application Sound Mixer & Leveler */}
+        {/* Full Row: Active Application Sound Output & Acoustic Monitor */}
         <section className="panel-card" style={{ gridColumn: '1 / -1' }}>
           <div className="card-header">
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
               <Gamepad2 size={20} color="#10b981" />
               <h2 className="card-title" style={{ margin: 0 }}>
-                Application Sound Mixer Guard
+                Active Applications Acoustic Monitor
               </h2>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
               <span className={`card-badge ${(metrics.appSessions?.length || 0) > 0 ? 'green' : 'gray'}`}>
-                {metrics.appSessions?.length || 0} Apps Monitored
+                {metrics.appSessions?.length || 0} Apps Active
               </span>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', color: settings.appFilteringEnabled ? '#38bdf8' : '#94a3b8' }}>
-                <span style={{ fontWeight: settings.appFilteringEnabled ? '600' : 'normal' }}>App-Specific Mode</span>
-                <input 
-                  type="checkbox" 
-                  className="toggle-checkbox" 
-                  checked={settings.appFilteringEnabled ?? false} 
-                  onChange={toggleAppFiltering} 
-                  title="When enabled, only protected apps (e.g. Discord) are limited; bypassed music blasts freely at 100%"
-                />
-              </div>
             </div>
           </div>
 
           <p style={{ fontSize: '0.82rem', color: '#94a3b8', margin: '0 0 0.85rem 0' }}>
-            Actively scans the Windows Sound Mixer. If any game (like CS2 at <code>volume 1</code>) or software pushes sound pressure into an unsafe dB range, PermadB automatically levels its mixer volume down to your safe ceiling.
+            Actively monitors running audio sessions and real-time sound pressure. All digital limiting is performed deterministically on raw PCM audio in <code>audiodg.exe</code> via PermadBApo.dll — zero manipulation of Windows volume mixer sliders.
           </p>
-
-          {/* Custom process adder */}
-          <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', marginBottom: '1rem', alignItems: 'center' }}>
-            <button
-              onClick={() => setShowAddApp(!showAddApp)}
-              style={{
-                background: 'rgba(255, 255, 255, 0.08)',
-                color: '#f8fafc',
-                border: '1px solid rgba(255, 255, 255, 0.15)',
-                borderRadius: '6px',
-                padding: '4px 12px',
-                fontSize: '0.8rem',
-                fontWeight: '600',
-                cursor: 'pointer'
-              }}
-            >
-              ➕ Add App Process...
-            </button>
-
-            {showAddApp && (
-              <div style={{ display: 'flex', gap: '6px', alignItems: 'center', width: '100%', marginTop: '6px' }}>
-                <input
-                  type="text"
-                  placeholder="e.g. Discord, Spotify, cs2, chrome..."
-                  value={customAppInput}
-                  onChange={e => setCustomAppInput(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter') handleAddCustomApp(); }}
-                  style={{
-                    background: '#0f172a',
-                    border: '1px solid #334155',
-                    borderRadius: '6px',
-                    color: '#fff',
-                    padding: '5px 10px',
-                    fontSize: '0.82rem',
-                    flex: '1'
-                  }}
-                />
-                <button
-                  onClick={handleAddCustomApp}
-                  style={{
-                    background: '#10b981',
-                    color: '#fff',
-                    border: 'none',
-                    borderRadius: '6px',
-                    padding: '5px 14px',
-                    fontSize: '0.82rem',
-                    fontWeight: 'bold',
-                    cursor: 'pointer'
-                  }}
-                >
-                  Add
-                </button>
-              </div>
-            )}
-          </div>
 
           {(!metrics.appSessions || metrics.appSessions.length === 0) ? (
             <div style={{
@@ -932,7 +798,7 @@ export default function App() {
               border: '1px dashed rgba(255, 255, 255, 0.08)',
               fontSize: '0.85rem'
             }}>
-              🎧 No audio-producing applications active. Launch a game or media app (CS2, Discord, Chrome, Spotify) to see real-time leveling!
+              🎧 No audio-producing applications active. Launch a game or media app (CS2, Discord, Chrome, Spotify) to see real-time acoustic telemetry!
             </div>
           ) : (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '1rem' }}>
@@ -974,22 +840,6 @@ export default function App() {
                           </div>
                           <div style={{ fontSize: '0.7rem', color: '#64748b', display: 'flex', alignItems: 'center', gap: '6px' }}>
                             <span>PID {app.processId} {app.isMuted ? '• Muted' : ''}</span>
-                            <button
-                              onClick={() => handleToggleAppProtection(app.processName, app.isProtected ?? true)}
-                              style={{
-                                background: (app.isProtected ?? true) ? 'rgba(16, 185, 129, 0.15)' : 'rgba(148, 163, 184, 0.15)',
-                                color: (app.isProtected ?? true) ? '#34d399' : '#94a3b8',
-                                border: (app.isProtected ?? true) ? '1px solid rgba(16, 185, 129, 0.35)' : '1px solid rgba(148, 163, 184, 0.25)',
-                                borderRadius: '4px',
-                                padding: '1px 6px',
-                                fontSize: '0.68rem',
-                                fontWeight: '600',
-                                cursor: 'pointer'
-                              }}
-                              title={(app.isProtected ?? true) ? "PermadB limits this app. Click to bypass." : "App is bypassed. Click to limit."}
-                            >
-                              {(app.isProtected ?? true) ? '🛡️ Limited' : '⚡ Bypassed'}
-                            </button>
                           </div>
                         </div>
                       </div>
@@ -1005,7 +855,7 @@ export default function App() {
                         alignItems: 'center',
                         gap: '4px'
                       }}>
-                        {isClamped ? '🛡️ Leveled' : isUnsafe ? '⚠️ Peak' : '🟢 Safe'}
+                        {isClamped ? '🛡️ Guarded' : isUnsafe ? '⚠️ Peak' : '🟢 Safe'}
                       </span>
                     </div>
 
@@ -1027,20 +877,10 @@ export default function App() {
                       </div>
                     </div>
 
-                    {/* Sound Mixer Volume Slider */}
-                    <div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem', color: '#94a3b8', marginBottom: '2px' }}>
-                        <span>Mixer Volume</span>
-                        <span style={{ fontWeight: '600', color: '#e2e8f0' }}>{app.volumePercent}%</span>
-                      </div>
-                      <input 
-                        type="range"
-                        min="0"
-                        max="100"
-                        value={app.volumePercent}
-                        onChange={(e) => handleSetAppVolume(app.processName, e.target.value)}
-                        style={{ width: '100%', accentColor: '#10b981', cursor: 'pointer' }}
-                      />
+                    {/* Windows Mixer Volume Indicator (Read-only) */}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem', color: '#64748b' }}>
+                      <span>Windows Mixer: {app.volumePercent}%</span>
+                      <span>Limiter: Armed (100% APO)</span>
                     </div>
                   </div>
                 );

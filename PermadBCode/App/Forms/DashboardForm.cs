@@ -78,16 +78,8 @@ public class DashboardForm : Form
     private Label _deviceInfoLabel = null!;
     private CheckBox _chkAllDevices = null!;
     private CheckBox _chkStartup = null!;
-    private CheckBox _chkAppFiltering = null!;
 
-    // Dual View Panels & Controls
     private Panel _mainViewPanel = null!;
-    private Panel _appManagerViewPanel = null!;
-    private Button _backButton = null!;
-    private CheckBox _chkAppMode = null!;
-    private TextBox _txtAppSearch = null!;
-    private Button _btnAddApp = null!;
-    private FlowLayoutPanel _appsScrollPanel = null!;
 
     private bool _isUpdatingUi = false;
     private string _lastKnownPreset = string.Empty;
@@ -194,22 +186,6 @@ public class DashboardForm : Form
             catch { }
         };
 
-        _backButton = new Button
-        {
-            Text = "← Back",
-            Font = new Font("Segoe UI", 8.0f, FontStyle.Bold),
-            Size = new Size(58, 24),
-            Location = new Point(10, 11),
-            FlatStyle = FlatStyle.Flat,
-            BackColor = Color.FromArgb(51, 65, 85),
-            ForeColor = Color.White,
-            Cursor = Cursors.Hand,
-            Visible = false
-        };
-        _backButton.FlatAppearance.BorderSize = 0;
-        _backButton.Click += (s, e) => ShowMainView();
-
-        _headerPanel.Controls.Add(_backButton);
         _headerPanel.Controls.Add(_titleLabel);
         _headerPanel.Controls.Add(_subtitleLabel);
         _headerPanel.Controls.Add(donateButton);
@@ -485,335 +461,23 @@ public class DashboardForm : Form
             _engine.EnforceVolumeCeiling();
         };
 
-        _chkAppFiltering = new CheckBox
-        {
-            Text = "App-Specific Limiting",
-            Font = new Font("Segoe UI", 8.5f, FontStyle.Regular),
-            ForeColor = _textWhite,
-            Location = new Point(14, 90),
-            Size = new Size(196, 24),
-            Checked = _config.Settings.AppFilteringEnabled,
-            Cursor = Cursors.Hand
-        };
-        _chkAppFiltering.CheckedChanged += (s, e) =>
-        {
-            _config.Settings.AppFilteringEnabled = _chkAppFiltering.Checked;
-            _config.Save();
-            _engine.EnforceVolumeCeiling();
-        };
-
-        var btnSelectApps = new Button
-        {
-            Text = "🎯 Select Apps (ON / OFF)...",
-            Font = new Font("Segoe UI", 8.0f, FontStyle.Bold),
-            Size = new Size(166, 24),
-            Location = new Point(214, 90),
-            FlatStyle = FlatStyle.Flat,
-            BackColor = Color.FromArgb(51, 65, 85),
-            ForeColor = Color.White,
-            Cursor = Cursors.Hand
-        };
-        btnSelectApps.FlatAppearance.BorderSize = 0;
-        btnSelectApps.Click += (s, e) => ShowAppManagerView();
-
         var hintLabel = new Label
         {
-            Text = "💡 Safe volume ceiling protects hearing. With App-Specific enabled, only chosen apps are clamped; bypassed music blasts at 100% full scale.",
+            Text = "💡 PermadB enforces a strict digital ceiling directly on raw audio via its C++ APO limiter (PermadBApo.dll). Your Windows volume mixer remains untouched and intact.",
             Font = new Font("Segoe UI", 8.0f, FontStyle.Italic),
             ForeColor = _textMuted,
-            Location = new Point(12, 120),
-            Size = new Size(368, 54)
+            Location = new Point(12, 98),
+            Size = new Size(368, 65)
         };
 
         _settingsCard.Controls.Add(_deviceInfoLabel);
         _settingsCard.Controls.Add(_chkStartup);
         _settingsCard.Controls.Add(_chkAllDevices);
-        _settingsCard.Controls.Add(_chkAppFiltering);
-        _settingsCard.Controls.Add(btnSelectApps);
         _settingsCard.Controls.Add(hintLabel);
         _mainViewPanel.Controls.Add(_settingsCard);
         this.Controls.Add(_mainViewPanel);
 
-        // ==========================================
-        // App Manager View Panel (In-window view swap)
-        // ==========================================
-        _appManagerViewPanel = new Panel
-        {
-            Location = new Point(0, 46),
-            Size = new Size(420, 594),
-            BackColor = Color.Transparent,
-            Visible = false
-        };
-
-        var appModeCard = new Panel
-        {
-            Location = new Point(14, 10),
-            Size = new Size(392, 58),
-            BackColor = _bgCard
-        };
-        appModeCard.Paint += (s, e) => DrawCardBorder(e.Graphics, appModeCard.ClientRectangle);
-
-        _chkAppMode = new CheckBox
-        {
-            Text = "Enable App-Specific Limiting Mode",
-            Font = new Font("Segoe UI", 9.0f, FontStyle.Bold),
-            ForeColor = _textWhite,
-            Location = new Point(12, 8),
-            Size = new Size(368, 22),
-            Checked = _config.Settings.AppFilteringEnabled,
-            Cursor = Cursors.Hand
-        };
-        _chkAppMode.CheckedChanged += (s, e) =>
-        {
-            _engine.ToggleAppFiltering(_chkAppMode.Checked);
-            _chkAppFiltering.Checked = _chkAppMode.Checked;
-        };
-
-        var appModeSub = new Label
-        {
-            Text = "When ON, only apps marked LIMITED are clamped. Bypassed apps blast freely at 100%.",
-            Font = new Font("Segoe UI", 7.5f),
-            ForeColor = _textMuted,
-            Location = new Point(12, 30),
-            Size = new Size(368, 24)
-        };
-        appModeCard.Controls.Add(_chkAppMode);
-        appModeCard.Controls.Add(appModeSub);
-
-        _txtAppSearch = new TextBox
-        {
-            Location = new Point(14, 76),
-            Size = new Size(248, 26),
-            BackColor = _bgCard,
-            ForeColor = Color.White,
-            Font = new Font("Segoe UI", 9.0f),
-            PlaceholderText = "🔍 Search applications..."
-        };
-        _txtAppSearch.TextChanged += (s, e) => PopulateAppManagerRows();
-
-        _btnAddApp = new Button
-        {
-            Text = "➕ Add Process...",
-            Location = new Point(268, 75),
-            Size = new Size(138, 27),
-            FlatStyle = FlatStyle.Flat,
-            BackColor = Color.FromArgb(51, 65, 85),
-            ForeColor = Color.White,
-            Font = new Font("Segoe UI", 8.0f, FontStyle.Bold),
-            Cursor = Cursors.Hand
-        };
-        _btnAddApp.FlatAppearance.BorderSize = 0;
-        _btnAddApp.Click += (s, e) => PromptAddProcess();
-
-        _appsScrollPanel = new FlowLayoutPanel
-        {
-            Location = new Point(14, 108),
-            Size = new Size(392, 434),
-            AutoScroll = true,
-            FlowDirection = FlowDirection.TopDown,
-            WrapContents = false,
-            BackColor = Color.FromArgb(20, 28, 44),
-            Padding = new Padding(4)
-        };
-
-        var btnBackBottom = new Button
-        {
-            Text = "← Back to Dashboard",
-            Location = new Point(14, 548),
-            Size = new Size(392, 36),
-            FlatStyle = FlatStyle.Flat,
-            BackColor = Color.FromArgb(51, 65, 85),
-            ForeColor = Color.White,
-            Font = new Font("Segoe UI", 9.0f, FontStyle.Bold),
-            Cursor = Cursors.Hand
-        };
-        btnBackBottom.FlatAppearance.BorderSize = 0;
-        btnBackBottom.Click += (s, e) => ShowMainView();
-
-        _appManagerViewPanel.Controls.Add(appModeCard);
-        _appManagerViewPanel.Controls.Add(_txtAppSearch);
-        _appManagerViewPanel.Controls.Add(_btnAddApp);
-        _appManagerViewPanel.Controls.Add(_appsScrollPanel);
-        _appManagerViewPanel.Controls.Add(btnBackBottom);
-        this.Controls.Add(_appManagerViewPanel);
-
         this.ResumeLayout(false);
-    }
-
-    public void ShowAppManagerView()
-    {
-        if (this.InvokeRequired)
-        {
-            this.BeginInvoke(new Action(ShowAppManagerView));
-            return;
-        }
-
-        SafeShowNearTray();
-        _mainViewPanel.Visible = false;
-        _appManagerViewPanel.Visible = true;
-        _backButton.Visible = true;
-        _titleLabel.Text = "🎯 App Protection";
-        _titleLabel.Location = new Point(78, 11);
-        _subtitleLabel.Visible = false;
-        _chkAppMode.Checked = _config.Settings.AppFilteringEnabled;
-
-        PopulateAppManagerRows();
-    }
-
-    public void ShowMainView()
-    {
-        _appManagerViewPanel.Visible = false;
-        _mainViewPanel.Visible = true;
-        _backButton.Visible = false;
-        _titleLabel.Text = "🛡️ PermadB";
-        _titleLabel.Location = new Point(12, 11);
-        _subtitleLabel.Visible = true;
-        _chkAppFiltering.Checked = _config.Settings.AppFilteringEnabled;
-    }
-
-    private void PopulateAppManagerRows()
-    {
-        _appsScrollPanel.SuspendLayout();
-        _appsScrollPanel.Controls.Clear();
-
-        var apps = _engine.GetDiscoverableAudioApps();
-        var filter = _txtAppSearch?.Text.Trim() ?? "";
-
-        int count = 0;
-        foreach (var app in apps)
-        {
-            string procName = app.ProcessName;
-            if (!string.IsNullOrEmpty(filter) &&
-                !procName.Contains(filter, StringComparison.OrdinalIgnoreCase) &&
-                !app.DisplayName.Contains(filter, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            count++;
-            bool isProtected = _engine.IsAppProtected(procName);
-
-            var rowPanel = new Panel
-            {
-                Size = new Size(364, 46),
-                BackColor = _bgCard,
-                Margin = new Padding(0, 0, 0, 5),
-                Tag = procName
-            };
-            rowPanel.Paint += (s, e) => DrawCardBorder(e.Graphics, rowPanel.ClientRectangle);
-
-            var nameLbl = new Label
-            {
-                Text = procName,
-                Font = new Font("Segoe UI", 9.0f, FontStyle.Bold),
-                ForeColor = _textWhite,
-                Location = new Point(10, 6),
-                Size = new Size(220, 18),
-                AutoEllipsis = true
-            };
-
-            string status = isProtected ? "🛡️ Limited (Safe)" : "⚡ Bypassed (100% blast)";
-            var statusLbl = new Label
-            {
-                Text = status,
-                Font = new Font("Segoe UI", 7.5f),
-                ForeColor = isProtected ? _accentGreen : _textMuted,
-                Location = new Point(10, 25),
-                Size = new Size(220, 16)
-            };
-
-            var toggleBtn = new Button
-            {
-                Text = isProtected ? "🛡️ LIMITED" : "⚡ BYPASSED",
-                Font = new Font("Segoe UI", 7.5f, FontStyle.Bold),
-                Size = new Size(110, 28),
-                Location = new Point(244, 9),
-                FlatStyle = FlatStyle.Flat,
-                BackColor = isProtected ? Color.FromArgb(16, 185, 129) : Color.FromArgb(51, 65, 85),
-                ForeColor = Color.White,
-                Cursor = Cursors.Hand
-            };
-            toggleBtn.FlatAppearance.BorderSize = 0;
-            toggleBtn.Click += (s, e) =>
-            {
-                bool nextProt = !_engine.IsAppProtected(procName);
-                _engine.SetAppProtection(procName, nextProt);
-
-                toggleBtn.BackColor = nextProt ? Color.FromArgb(16, 185, 129) : Color.FromArgb(51, 65, 85);
-                toggleBtn.Text = nextProt ? "🛡️ LIMITED" : "⚡ BYPASSED";
-                statusLbl.Text = nextProt ? "🛡️ Limited (Safe)" : "⚡ Bypassed (100% blast)";
-                statusLbl.ForeColor = nextProt ? _accentGreen : _textMuted;
-            };
-
-            rowPanel.Controls.Add(nameLbl);
-            rowPanel.Controls.Add(statusLbl);
-            rowPanel.Controls.Add(toggleBtn);
-
-            _appsScrollPanel.Controls.Add(rowPanel);
-        }
-
-        if (count == 0)
-        {
-            var emptyLabel = new Label
-            {
-                Text = "No applications found. Click '➕ Add Process' to configure any software!",
-                Font = new Font("Segoe UI", 8.5f, FontStyle.Italic),
-                ForeColor = _textMuted,
-                Size = new Size(360, 48),
-                TextAlign = ContentAlignment.MiddleCenter,
-                Margin = new Padding(0, 30, 0, 0)
-            };
-            _appsScrollPanel.Controls.Add(emptyLabel);
-        }
-
-        _appsScrollPanel.ResumeLayout();
-    }
-
-    private void PromptAddProcess()
-    {
-        using var promptForm = new Form
-        {
-            Width = 380,
-            Height = 180,
-            FormBorderStyle = FormBorderStyle.FixedDialog,
-            Text = "Add Application to Limiter",
-            StartPosition = FormStartPosition.CenterParent,
-            MaximizeBox = false,
-            MinimizeBox = false,
-            BackColor = _bgDark,
-            ForeColor = Color.White
-        };
-
-        var lbl = new Label { Left = 20, Top = 16, Width = 320, Text = "Process Name (e.g. Discord, Spotify, cs2, chrome):", Font = new Font("Segoe UI", 8.5f) };
-        var txt = new TextBox { Left = 20, Top = 40, Width = 320, BackColor = _bgCard, ForeColor = Color.White, Font = new Font("Segoe UI", 9.5f) };
-        var chk = new CheckBox { Left = 20, Top = 72, Width = 320, Text = "Limit this app (Uncheck to bypass so music blasts)", Checked = true, Font = new Font("Segoe UI", 8.5f) };
-
-        var btnOk = new Button { Text = "Add", Left = 170, Width = 80, Top = 104, DialogResult = DialogResult.OK, BackColor = _accentGreen, ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
-        btnOk.FlatAppearance.BorderSize = 0;
-        var btnCancel = new Button { Text = "Cancel", Left = 260, Width = 80, Top = 104, DialogResult = DialogResult.Cancel, BackColor = Color.FromArgb(51, 65, 85), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
-        btnCancel.FlatAppearance.BorderSize = 0;
-
-        promptForm.Controls.Add(lbl);
-        promptForm.Controls.Add(txt);
-        promptForm.Controls.Add(chk);
-        promptForm.Controls.Add(btnOk);
-        promptForm.Controls.Add(btnCancel);
-        promptForm.AcceptButton = btnOk;
-        promptForm.CancelButton = btnCancel;
-
-        if (promptForm.ShowDialog(this) == DialogResult.OK)
-        {
-            var pName = txt.Text.Trim();
-            if (pName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
-            {
-                pName = pName.Substring(0, pName.Length - 4);
-            }
-            if (!string.IsNullOrWhiteSpace(pName))
-            {
-                _engine.SetAppProtection(pName, chk.Checked);
-                PopulateAppManagerRows();
-            }
-        }
     }
 
     protected override void OnPaint(PaintEventArgs e)

@@ -45,11 +45,6 @@ static class Program
             dashboardForm.SafeToggleNearTray();
         };
 
-        tray.OnOpenAppManagerRequested += () =>
-        {
-            dashboardForm.ShowAppManagerView();
-        };
-
         tray.OnExitRequested += () =>
         {
             Application.Exit();

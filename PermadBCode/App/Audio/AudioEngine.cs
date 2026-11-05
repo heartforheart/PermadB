@@ -147,10 +147,8 @@ public class AudioEngine : IMMNotificationClient, IDisposable
     private DateTime _lastSessionScan = DateTime.MinValue;
     private List<AppSessionInfo> _cachedAppSessions = new();
 
-    // Process name and baseline volume tracking for per-app Windows Sound Mixer sessions
+    // Process name and peak tracking for active WASAPI audio sessions (telemetry only)
     private readonly ConcurrentDictionary<int, string> _processNameCache = new();
-    private readonly ConcurrentDictionary<string, float> _appBaselineVolume = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentDictionary<string, DateTime> _appLastClampTime = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, float> _appSmoothedPeak = new(StringComparer.OrdinalIgnoreCase);
 
     // Voice communication applications where speech intelligibility must NEVER be crushed or muted
@@ -465,31 +463,9 @@ public class AudioEngine : IMMNotificationClient, IDisposable
 
     public void SetAppVolume(string processName, float volumePercent)
     {
-        float targetScalar = Math.Clamp(volumePercent / 100.0f, 0.0f, 1.0f);
-        _appBaselineVolume[processName] = targetScalar;
-
-        PostToAudioThread(() =>
-        {
-            if (_activeDevice == null) return;
-            try
-            {
-                var sessionManager = _activeDevice.AudioSessionManager;
-                var sessions = sessionManager.Sessions;
-                for (int i = 0; i < sessions.Count; i++)
-                {
-                    var s = sessions[i];
-                    var pid = (int)s.GetProcessID;
-                    if (pid > 0 && _processNameCache.TryGetValue(pid, out var pName))
-                    {
-                        if (string.Equals(pName, processName, StringComparison.OrdinalIgnoreCase))
-                        {
-                            s.SimpleAudioVolume.Volume = targetScalar;
-                        }
-                    }
-                }
-            }
-            catch { }
-        });
+        // Invariant: PermadB never alters Windows Volume Mixer.
+        // Safety limiting is enforced exclusively on raw PCM audio inside audiodg.exe via the C++ APO DLL.
+        Console.WriteLine($"[AudioEngine] SetAppVolume({processName}, {volumePercent:F0}%) ignored: Volume mixer immutability invariant strictly enforced.");
     }
 
     private void PostToAudioThread(Action action)
@@ -776,16 +752,6 @@ public class AudioEngine : IMMNotificationClient, IDisposable
             linear = Math.Clamp(linear, 0.001f, 0.8912509f);
             float dbfs = 20.0f * (float)Math.Log10(linear);
 
-            // When Application-Specific Limiting is enabled:
-            // Master APO runs in transparent peak-limiter mode (0 dBFS / -1.0 dBFS ceiling)
-            // so bypassed applications (like music players) can blast at 100% full volume!
-            // Protected applications (like Discord) are clamped individually at the WASAPI session level.
-            if (_config.Settings.AppFilteringEnabled && isEnabled)
-            {
-                linear = 0.8912509f;
-                dbfs = -1.0f;
-            }
-
             int enabledInt = isEnabled ? 1 : 0;
 
             if (_telemetryAcc == null)
@@ -1000,64 +966,18 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                         var appEstPeakSpl = Math.Clamp(profile.EstimatedMaxDbSpl + appPeakDbfs + masterDbAtten, 25.0f, 120.0f);
                         var appEstContinuousSpl = Math.Clamp(appEstPeakSpl - crestFactor, 25.0f, 105.0f);
 
-                        bool isProtected = IsAppProtected(procName);
-                        bool isAppClamped = false;
-
-                        // Per-App Session Limiting:
-                        // Active when AppFilteringEnabled is true, or AppMixerGuardEnabled is true.
-                        // Clamps ONLY applications marked Protected (e.g. Discord).
-                        // Bypassed applications (e.g. Spotify, Music) are never ducked!
-                        if (_config.Settings.Enabled && (_config.Settings.AppFilteringEnabled || _config.Settings.AppMixerGuardEnabled))
-                        {
-                            if (isProtected)
-                            {
-                                if (!_appBaselineVolume.ContainsKey(procName))
-                                {
-                                    _appBaselineVolume[procName] = Math.Max(appVol, 0.8f);
-                                }
-                                float baseline = _appBaselineVolume[procName];
-
-                                if (appEstContinuousSpl > profile.TargetSafeDbSpl && rawAppPeak > 0.01f)
-                                {
-                                    float excessDb = appEstContinuousSpl - profile.TargetSafeDbSpl;
-                                    float reductionLinear = (float)Math.Pow(10.0, -excessDb / 20.0);
-                                    float targetVol = Math.Clamp(baseline * reductionLinear, 0.05f, baseline);
-
-                                    s.SimpleAudioVolume.Volume = Math.Min(appVol, targetVol);
-                                    isAppClamped = true;
-                                    _appLastClampTime[procName] = DateTime.UtcNow;
-                                }
-                                else if (_appLastClampTime.TryGetValue(procName, out var lastClamped))
-                                {
-                                    if ((DateTime.UtcNow - lastClamped).TotalMilliseconds > 300 && appVol < baseline)
-                                    {
-                                        s.SimpleAudioVolume.Volume = Math.Min(baseline, appVol + 0.15f);
-                                    }
-                                }
-                            }
-                            else
-                            {
-                                // Application is BYPASSED (e.g. music blasting)
-                                // If it was previously clamped down by PermadB, immediately restore full baseline!
-                                if (appVol < 1.0f && _appBaselineVolume.TryGetValue(procName, out float bVal))
-                                {
-                                    s.SimpleAudioVolume.Volume = Math.Max(bVal, 1.0f);
-                                }
-                            }
-                        }
-
                         appSessionsList.Add(new AppSessionInfo
                         {
                             ProcessId = pid,
                             ProcessName = procName,
                             DisplayName = string.IsNullOrWhiteSpace(s.DisplayName) ? procName : s.DisplayName,
-                            VolumePercent = (float)Math.Round(s.SimpleAudioVolume.Volume * 100.0f, 1),
+                            VolumePercent = (float)Math.Round(appVol * 100.0f, 1),
                             PeakValue = (float)Math.Round(smoothedPeak, 3),
                             PeakDbfs = (float)Math.Round(appPeakDbfs, 1),
                             EstimatedDbSpl = (float)Math.Round(appEstContinuousSpl, 1),
                             IsMuted = appMute,
-                            IsClamped = isAppClamped,
-                            IsProtected = isProtected,
+                            IsClamped = false,
+                            IsProtected = true,
                             IsUnsafe = appEstContinuousSpl > profile.TargetSafeDbSpl
                         });
                     }
