@@ -28,8 +28,17 @@ public class AppSettings
     public bool StartWithWindows { get; set; } = true;
     public string ActivePreset { get; set; } = "safe"; // "safe", "night", "studio", "custom"
     
-    // User-saved single custom preset ceiling percentage (0 to 100)
-    public float CustomPresetPercent { get; set; } = 70.0f;
+    // User-saved custom presets (0 to 100)
+    // Custom 1 (High / Music / Dynamic) & Custom 2 (Low / Night / Voice)
+    public float Custom1PresetPercent { get; set; } = 85.0f;
+    public float Custom2PresetPercent { get; set; } = 45.0f;
+
+    // Backward-compatibility alias for single CustomPresetPercent
+    public float CustomPresetPercent
+    {
+        get => Custom1PresetPercent;
+        set => Custom1PresetPercent = value;
+    }
     
     // Dynamic transient limiter (ducks sudden peaks like gunshots, ads, explosions)
     public bool DynamicLimiterEnabled { get; set; } = true;
@@ -51,6 +60,13 @@ public class AppSettings
     // App Sound Mixer Guard: Default false (Master Limiter handles all audio; never alters per-app volume sliders)
     public bool AppMixerGuardEnabled { get; set; } = false;
     public Dictionary<string, float> AppVolumeOverrides { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    // Application-Specific Limiting Mode:
+    // If true: only explicitly protected apps (e.g. Discord) are clamped by the WASAPI session limiter,
+    // allowing bypassed apps (like Spotify, VLC, games) to blast at full volume without Master APO attenuation!
+    // If false (default): Master Hardware Limiter protects all mixed audio globally.
+    public bool AppFilteringEnabled { get; set; } = false;
+    public Dictionary<string, bool> AppProtectionRules { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     
     public Dictionary<string, DeviceProfile> DeviceProfiles { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }

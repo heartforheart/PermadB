@@ -129,9 +129,19 @@ public class ApiServer : IDisposable
                     _engine.SetSafeCeiling((float)ceilingProp.GetDouble());
                 }
 
+                if (incoming.TryGetProperty("custom1PresetPercent", out var c1Prop))
+                {
+                    _config.Settings.Custom1PresetPercent = Math.Clamp((float)c1Prop.GetDouble(), 10.0f, 100.0f);
+                }
+
+                if (incoming.TryGetProperty("custom2PresetPercent", out var c2Prop))
+                {
+                    _config.Settings.Custom2PresetPercent = Math.Clamp((float)c2Prop.GetDouble(), 10.0f, 100.0f);
+                }
+
                 if (incoming.TryGetProperty("customPresetPercent", out var customProp))
                 {
-                    _config.Settings.CustomPresetPercent = Math.Clamp((float)customProp.GetDouble(), 10.0f, 100.0f);
+                    _config.Settings.Custom1PresetPercent = Math.Clamp((float)customProp.GetDouble(), 10.0f, 100.0f);
                 }
 
                 if (incoming.TryGetProperty("dynamicLimiterEnabled", out var dynProp))
@@ -173,6 +183,12 @@ public class ApiServer : IDisposable
                 if (incoming.TryGetProperty("appMixerGuardEnabled", out var appGuardProp))
                 {
                     _config.Settings.AppMixerGuardEnabled = appGuardProp.GetBoolean();
+                }
+
+                if (incoming.TryGetProperty("appFilteringEnabled", out var appFilterProp))
+                {
+                    _config.Settings.AppFilteringEnabled = appFilterProp.GetBoolean();
+                    _engine.EnforceVolumeCeiling();
                 }
 
                 _config.Save();
@@ -245,6 +261,22 @@ public class ApiServer : IDisposable
                     var vol = (float)appVolProp.GetDouble();
                     _engine.SetAppVolume(pName, vol);
                     await SendJson(res, new { success = true, processName = pName, volumePercent = vol });
+                    return;
+                }
+            }
+
+            if (path == "/api/apps/protect" && req.HttpMethod == "POST")
+            {
+                using var reader = new StreamReader(req.InputStream, req.ContentEncoding);
+                var body = await reader.ReadToEndAsync();
+                var data = JsonSerializer.Deserialize<JsonElement>(body);
+                if (data.TryGetProperty("processName", out var procProp) &&
+                    data.TryGetProperty("isProtected", out var protProp))
+                {
+                    var pName = procProp.GetString() ?? "";
+                    var isProt = protProp.GetBoolean();
+                    _engine.SetAppProtection(pName, isProt);
+                    await SendJson(res, new { success = true, processName = pName, isProtected = isProt });
                     return;
                 }
             }

@@ -171,17 +171,60 @@ export default function App() {
     } catch (e) {}
   };
 
-  // Save current ceiling as Custom Preset
-  const handleSaveCustomPreset = async () => {
+  // Save current ceiling as Custom Preset (slot 1 = High, slot 2 = Low)
+  const handleSaveCustomPreset = async (slot = 1) => {
     const val = metrics.safeCeilingPercent;
-    setSettings(prev => ({ ...prev, customPresetPercent: val, activePreset: 'custom' }));
+    const presetKey = slot === 2 ? 'custom2' : 'custom1';
+    const propKey = slot === 2 ? 'custom2PresetPercent' : 'custom1PresetPercent';
+    setSettings(prev => ({ ...prev, [propKey]: val, activePreset: presetKey }));
     try {
       await fetch('/api/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ customPresetPercent: val, activePreset: 'custom' })
+        body: JSON.stringify({ [propKey]: val, activePreset: presetKey })
       });
       fetchData();
+    } catch (e) {}
+  };
+
+  // Toggle App-Specific Selective Limiting (Discord only, music blast)
+  const toggleAppFiltering = async () => {
+    const nextVal = !settings.appFilteringEnabled;
+    setSettings(prev => ({ ...prev, appFilteringEnabled: nextVal }));
+    try {
+      await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ appFilteringEnabled: nextVal })
+      });
+      fetchData();
+    } catch (e) {}
+  };
+
+  // Toggle Per-App Protection (e.g. Discord Protected vs Spotify Bypassed)
+  const handleToggleAppProtection = async (processName, currentVal) => {
+    const nextVal = !currentVal;
+    setSettings(prev => ({
+      ...prev,
+      appProtectionRules: {
+        ...(prev.appProtectionRules || {}),
+        [processName]: nextVal
+      }
+    }));
+    setMetrics(prev => ({
+      ...prev,
+      appSessions: (prev.appSessions || []).map(s =>
+        s.processName.toLowerCase() === processName.toLowerCase()
+          ? { ...s, isProtected: nextVal }
+          : s
+      )
+    }));
+    try {
+      await fetch('/api/apps/protect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ processName, isProtected: nextVal })
+      });
     } catch (e) {}
   };
 
@@ -577,12 +620,21 @@ export default function App() {
             </button>
 
             <button 
-              className={`preset-btn ${settings.activePreset === 'custom' ? 'active' : ''}`}
-              onClick={() => handlePresetSelect('custom')}
+              className={`preset-btn ${settings.activePreset === 'custom1' || settings.activePreset === 'custom' ? 'active' : ''}`}
+              onClick={() => handlePresetSelect('custom1')}
             >
-              <Sliders size={20} color={settings.activePreset === 'custom' ? '#10b981' : '#94a3b8'} />
-              <span className="preset-btn-name">Custom</span>
-              <span className="preset-btn-desc">{(settings.customPresetPercent || 70).toFixed(0)}% / Saved</span>
+              <Sliders size={20} color={settings.activePreset === 'custom1' || settings.activePreset === 'custom' ? '#10b981' : '#94a3b8'} />
+              <span className="preset-btn-name">Custom 1</span>
+              <span className="preset-btn-desc">{(settings.custom1PresetPercent || settings.customPresetPercent || 85).toFixed(0)}% / High</span>
+            </button>
+
+            <button 
+              className={`preset-btn ${settings.activePreset === 'custom2' ? 'active' : ''}`}
+              onClick={() => handlePresetSelect('custom2')}
+            >
+              <Sliders size={20} color={settings.activePreset === 'custom2' ? '#10b981' : '#94a3b8'} />
+              <span className="preset-btn-name">Custom 2</span>
+              <span className="preset-btn-desc">{(settings.custom2PresetPercent || 45).toFixed(0)}% / Low</span>
             </button>
           </div>
 
@@ -590,22 +642,38 @@ export default function App() {
           <div className="slider-container">
             <div className="slider-header">
               <span className="slider-label">Hardware Volume Ceiling</span>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                 <button
-                  onClick={handleSaveCustomPreset}
+                  onClick={() => handleSaveCustomPreset(1)}
                   style={{
                     background: 'var(--bg-card-sub)',
                     border: '1px solid var(--border-card)',
                     borderRadius: '6px',
                     color: 'var(--accent-sky, #38bdf8)',
-                    fontSize: '0.75rem',
-                    padding: '2px 8px',
+                    fontSize: '0.72rem',
+                    padding: '2px 7px',
                     cursor: 'pointer',
                     fontWeight: '600'
                   }}
-                  title="Save current ceiling as your single custom preset"
+                  title="Save current ceiling as Custom 1 (High)"
                 >
-                  💾 Save Custom
+                  💾 Cust 1
+                </button>
+                <button
+                  onClick={() => handleSaveCustomPreset(2)}
+                  style={{
+                    background: 'var(--bg-card-sub)',
+                    border: '1px solid var(--border-card)',
+                    borderRadius: '6px',
+                    color: 'var(--accent-sky, #38bdf8)',
+                    fontSize: '0.72rem',
+                    padding: '2px 7px',
+                    cursor: 'pointer',
+                    fontWeight: '600'
+                  }}
+                  title="Save current ceiling as Custom 2 (Low)"
+                >
+                  💾 Cust 2
                 </button>
                 <span className="slider-value-pill">{metrics.safeCeilingPercent.toFixed(0)}% Max</span>
               </div>
@@ -739,17 +807,18 @@ export default function App() {
                 Application Sound Mixer Guard
               </h2>
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
               <span className={`card-badge ${(metrics.appSessions?.length || 0) > 0 ? 'green' : 'gray'}`}>
                 {metrics.appSessions?.length || 0} Apps Monitored
               </span>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', color: '#94a3b8' }}>
-                <span>Auto-Level</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', color: settings.appFilteringEnabled ? '#38bdf8' : '#94a3b8' }}>
+                <span style={{ fontWeight: settings.appFilteringEnabled ? '600' : 'normal' }}>App-Specific Mode</span>
                 <input 
                   type="checkbox" 
                   className="toggle-checkbox" 
-                  checked={settings.appMixerGuardEnabled ?? true} 
-                  onChange={toggleAppMixerGuard} 
+                  checked={settings.appFilteringEnabled ?? false} 
+                  onChange={toggleAppFiltering} 
+                  title="When enabled, only protected apps (e.g. Discord) are limited; bypassed music blasts freely at 100%"
                 />
               </div>
             </div>
@@ -809,8 +878,24 @@ export default function App() {
                           <div style={{ fontSize: '0.88rem', fontWeight: '600', color: '#f8fafc', whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden' }}>
                             {app.processName}
                           </div>
-                          <div style={{ fontSize: '0.7rem', color: '#64748b' }}>
-                            PID {app.processId} {app.isMuted ? '• Muted' : ''}
+                          <div style={{ fontSize: '0.7rem', color: '#64748b', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            <span>PID {app.processId} {app.isMuted ? '• Muted' : ''}</span>
+                            <button
+                              onClick={() => handleToggleAppProtection(app.processName, app.isProtected ?? true)}
+                              style={{
+                                background: (app.isProtected ?? true) ? 'rgba(16, 185, 129, 0.15)' : 'rgba(148, 163, 184, 0.15)',
+                                color: (app.isProtected ?? true) ? '#34d399' : '#94a3b8',
+                                border: (app.isProtected ?? true) ? '1px solid rgba(16, 185, 129, 0.35)' : '1px solid rgba(148, 163, 184, 0.25)',
+                                borderRadius: '4px',
+                                padding: '1px 6px',
+                                fontSize: '0.68rem',
+                                fontWeight: '600',
+                                cursor: 'pointer'
+                              }}
+                              title={(app.isProtected ?? true) ? "PermadB limits this app. Click to bypass." : "App is bypassed. Click to limit."}
+                            >
+                              {(app.isProtected ?? true) ? '🛡️ Limited' : '⚡ Bypassed'}
+                            </button>
                           </div>
                         </div>
                       </div>

@@ -21,9 +21,12 @@ public class TrayIconManager : IDisposable
     private ToolStripMenuItem _safePresetItem = null!;
     private ToolStripMenuItem _nightPresetItem = null!;
     private ToolStripMenuItem _studioPresetItem = null!;
-    private ToolStripMenuItem _customPresetItem = null!;
-    private ToolStripMenuItem _saveCustomItem = null!;
+    private ToolStripMenuItem _custom1PresetItem = null!;
+    private ToolStripMenuItem _custom2PresetItem = null!;
+    private ToolStripMenuItem _saveCustom1Item = null!;
+    private ToolStripMenuItem _saveCustom2Item = null!;
     private ToolStripMenuItem _strictLockItem = null!;
+    private ToolStripMenuItem _appFilteringItem = null!;
     private ToolStripMenuItem _allDevicesItem = null!;
     private ToolStripMenuItem _startupItem = null!;
 
@@ -129,27 +132,45 @@ public class TrayIconManager : IDisposable
         });
         _contextMenu.Items.Add(_studioPresetItem);
 
-        // Custom Preset (Single User Saved Ceiling)
-        float customPercent = _config.Settings.CustomPresetPercent;
-        float customSpl = 50.0f + (customPercent / 100.0f) * 38.0f;
-        _customPresetItem = new ToolStripMenuItem($"Custom Preset ({customPercent:F0}% Ceiling / {customSpl:F0} dBA)", null, (s, e) =>
+        // Custom 1 Preset (High / Saved)
+        float custom1Percent = _config.Settings.Custom1PresetPercent;
+        float custom1Spl = 50.0f + (custom1Percent / 100.0f) * 38.0f;
+        _custom1PresetItem = new ToolStripMenuItem($"Custom 1 - High ({custom1Percent:F0}% Ceiling / {custom1Spl:F0} dBA)", null, (s, e) =>
         {
-            _engine.ApplyPreset("custom");
+            _engine.ApplyPreset("custom1");
             UpdateTrayAppearance();
-            ShowNotification("Custom Preset Activated", $"Volume ceiling set to your saved preset ({_config.Settings.CustomPresetPercent:F0}%).");
+            ShowNotification("Custom 1 Activated", $"Volume ceiling set to Custom 1 ({_config.Settings.Custom1PresetPercent:F0}%).");
         });
-        _contextMenu.Items.Add(_customPresetItem);
+        _contextMenu.Items.Add(_custom1PresetItem);
 
-        _saveCustomItem = new ToolStripMenuItem("💾 Save Current Ceiling as Custom", null, (s, e) =>
+        // Custom 2 Preset (Low / Saved)
+        float custom2Percent = _config.Settings.Custom2PresetPercent;
+        float custom2Spl = 50.0f + (custom2Percent / 100.0f) * 38.0f;
+        _custom2PresetItem = new ToolStripMenuItem($"Custom 2 - Low ({custom2Percent:F0}% Ceiling / {custom2Spl:F0} dBA)", null, (s, e) =>
+        {
+            _engine.ApplyPreset("custom2");
+            UpdateTrayAppearance();
+            ShowNotification("Custom 2 Activated", $"Volume ceiling set to Custom 2 ({_config.Settings.Custom2PresetPercent:F0}%).");
+        });
+        _contextMenu.Items.Add(_custom2PresetItem);
+
+        _saveCustom1Item = new ToolStripMenuItem("💾 Save Current Ceiling as Custom 1 (High)", null, (s, e) =>
         {
             var profile = _engine.GetActiveProfile();
-            _config.Settings.CustomPresetPercent = profile.SafeCeilingPercent;
-            _config.Settings.ActivePreset = "custom";
-            _config.Save();
+            _engine.SaveCustomPreset(1, profile.SafeCeilingPercent);
             UpdateTrayAppearance();
-            ShowNotification("Custom Preset Saved", $"Saved {profile.SafeCeilingPercent:F0}% as your custom preset.");
+            ShowNotification("Custom 1 Saved", $"Saved {profile.SafeCeilingPercent:F0}% as Custom 1.");
         });
-        _contextMenu.Items.Add(_saveCustomItem);
+        _contextMenu.Items.Add(_saveCustom1Item);
+
+        _saveCustom2Item = new ToolStripMenuItem("💾 Save Current Ceiling as Custom 2 (Low)", null, (s, e) =>
+        {
+            var profile = _engine.GetActiveProfile();
+            _engine.SaveCustomPreset(2, profile.SafeCeilingPercent);
+            UpdateTrayAppearance();
+            ShowNotification("Custom 2 Saved", $"Saved {profile.SafeCeilingPercent:F0}% as Custom 2.");
+        });
+        _contextMenu.Items.Add(_saveCustom2Item);
 
         _contextMenu.Items.Add(new ToolStripSeparator());
 
@@ -180,6 +201,22 @@ public class TrayIconManager : IDisposable
             UpdateTrayAppearance();
         });
         _contextMenu.Items.Add(_strictLockItem);
+
+        // App-Specific Limiting (Discord only / selective)
+        _appFilteringItem = new ToolStripMenuItem("🎯 App-Specific Limiting (Discord Only)", null, (s, e) =>
+        {
+            _engine.ToggleAppFiltering();
+            UpdateTrayAppearance();
+            if (_config.Settings.AppFilteringEnabled)
+            {
+                ShowNotification("App-Specific Limiting Active", "Only protected apps (e.g. Discord) are clamped. Music can blast at 100%!");
+            }
+            else
+            {
+                ShowNotification("Master Limiter Active", "System-wide protection active for all applications.");
+            }
+        });
+        _contextMenu.Items.Add(_appFilteringItem);
 
         // Protect All Devices (PA / DJ / Headphones)
         _allDevicesItem = new ToolStripMenuItem("🌐 Protect All Devices (PA/DJ/Headphones)", null, (s, e) =>
@@ -267,14 +304,22 @@ public class TrayIconManager : IDisposable
             _safePresetItem.Checked = isEnabled && preset == "safe";
             _nightPresetItem.Checked = isEnabled && preset == "night";
             _studioPresetItem.Checked = isEnabled && preset == "studio";
-            _customPresetItem.Checked = isEnabled && preset == "custom";
+            _custom1PresetItem.Checked = isEnabled && (preset == "custom1" || preset == "custom");
+            _custom2PresetItem.Checked = isEnabled && preset == "custom2";
 
-            var customVal = _config.Settings.CustomPresetPercent;
-            var customSpl = 50.0f + (customVal / 100.0f) * 38.0f;
-            _customPresetItem.Text = $"Custom Preset ({customVal:F0}% Ceiling / {customSpl:F0} dBA)";
-            _saveCustomItem.Text = $"💾 Save Current Ceiling ({profile.SafeCeilingPercent:F0}%) as Custom";
+            var c1Val = _config.Settings.Custom1PresetPercent;
+            var c1Spl = 50.0f + (c1Val / 100.0f) * 38.0f;
+            _custom1PresetItem.Text = $"Custom 1 - High ({c1Val:F0}% / {c1Spl:F0} dBA)";
+
+            var c2Val = _config.Settings.Custom2PresetPercent;
+            var c2Spl = 50.0f + (c2Val / 100.0f) * 38.0f;
+            _custom2PresetItem.Text = $"Custom 2 - Low ({c2Val:F0}% / {c2Spl:F0} dBA)";
+
+            _saveCustom1Item.Text = $"💾 Save Current ({profile.SafeCeilingPercent:F0}%) as Custom 1";
+            _saveCustom2Item.Text = $"💾 Save Current ({profile.SafeCeilingPercent:F0}%) as Custom 2";
 
             _strictLockItem.Checked = _config.Settings.StrictVolumeLock;
+            _appFilteringItem.Checked = _config.Settings.AppFilteringEnabled;
             _allDevicesItem.Checked = _config.Settings.ApplyToAllDevices;
             _startupItem.Checked = StartupManager.IsStartupEnabled();
 

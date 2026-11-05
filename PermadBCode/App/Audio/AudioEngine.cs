@@ -54,6 +54,7 @@ public class AppSessionInfo
     public bool IsMuted { get; set; }
     public bool IsClamped { get; set; }
     public bool IsUnsafe { get; set; }
+    public bool IsProtected { get; set; } = true;
 }
 
 public class AudioMetrics
@@ -74,6 +75,10 @@ public class AudioMetrics
     public bool ProtectMicrophoneInputs { get; set; } = true;
     public int ProtectedDevicesCount { get; set; } = 1;
     public bool AppMixerGuardEnabled { get; set; } = true;
+    public bool AppFilteringEnabled { get; set; } = false;
+    public float Custom1PresetPercent { get; set; } = 85.0f;
+    public float Custom2PresetPercent { get; set; } = 45.0f;
+    public Dictionary<string, bool> AppProtectionRules { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public List<AppSessionInfo> AppSessions { get; set; } = new();
 }
 
@@ -224,7 +229,15 @@ public class AudioEngine : IMMNotificationClient, IDisposable
         profile.SafeCeilingPercent = Math.Clamp(percent, 10.0f, 100.0f);
         profile.TargetSafeDbSpl = 50.0f + (profile.SafeCeilingPercent / 100.0f) * 38.0f;
         _config.Settings.Enabled = true;
-        _config.Settings.ActivePreset = "custom";
+        if (_config.Settings.ActivePreset == "custom2")
+        {
+            _config.Settings.Custom2PresetPercent = profile.SafeCeilingPercent;
+        }
+        else
+        {
+            _config.Settings.ActivePreset = "custom1";
+            _config.Settings.Custom1PresetPercent = profile.SafeCeilingPercent;
+        }
         _config.Save();
         UpdateCachedProfile(profile);
 
@@ -233,6 +246,56 @@ public class AudioEngine : IMMNotificationClient, IDisposable
             InternalEnforceCeiling();
             InternalPollMeter();
         });
+    }
+
+    public void SaveCustomPreset(int slot, float percent)
+    {
+        percent = Math.Clamp(percent, 10.0f, 100.0f);
+        if (slot == 2)
+        {
+            _config.Settings.Custom2PresetPercent = percent;
+            _config.Settings.ActivePreset = "custom2";
+        }
+        else
+        {
+            _config.Settings.Custom1PresetPercent = percent;
+            _config.Settings.ActivePreset = "custom1";
+        }
+        _config.Save();
+        ApplyPreset(_config.Settings.ActivePreset);
+    }
+
+    public void SetAppProtection(string processName, bool isProtected)
+    {
+        if (string.IsNullOrWhiteSpace(processName)) return;
+        _config.Settings.AppProtectionRules[processName] = isProtected;
+        _config.Save();
+        PostToAudioThread(() =>
+        {
+            InternalPollMeter();
+        });
+    }
+
+    public void ToggleAppFiltering(bool? enabled = null)
+    {
+        _config.Settings.AppFilteringEnabled = enabled ?? !_config.Settings.AppFilteringEnabled;
+        _config.Save();
+        PostToAudioThread(() =>
+        {
+            InternalEnforceCeiling();
+            InternalPollMeter();
+        });
+    }
+
+    public bool IsAppProtected(string processName)
+    {
+        if (string.IsNullOrWhiteSpace(processName)) return true;
+        if (_config.Settings.AppProtectionRules.TryGetValue(processName, out bool val))
+        {
+            return val;
+        }
+        if (CommunicationApps.Contains(processName)) return true;
+        return true;
     }
 
     public void ApplyPreset(string preset)
@@ -253,12 +316,20 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                 _config.Settings.DynamicThresholdDbfs = -1.5f;
                 _config.Settings.ActivePreset = "studio";
                 break;
-            case "custom":
-                float customPercent = Math.Clamp(_config.Settings.CustomPresetPercent, 20.0f, 100.0f);
-                profile.SafeCeilingPercent = customPercent;
-                profile.TargetSafeDbSpl = 50.0f + (customPercent / 100.0f) * 38.0f;
+            case "custom2":
+                float custom2Percent = Math.Clamp(_config.Settings.Custom2PresetPercent, 10.0f, 100.0f);
+                profile.SafeCeilingPercent = custom2Percent;
+                profile.TargetSafeDbSpl = 50.0f + (custom2Percent / 100.0f) * 38.0f;
                 _config.Settings.DynamicThresholdDbfs = -3.0f;
-                _config.Settings.ActivePreset = "custom";
+                _config.Settings.ActivePreset = "custom2";
+                break;
+            case "custom":
+            case "custom1":
+                float custom1Percent = Math.Clamp(_config.Settings.Custom1PresetPercent, 10.0f, 100.0f);
+                profile.SafeCeilingPercent = custom1Percent;
+                profile.TargetSafeDbSpl = 50.0f + (custom1Percent / 100.0f) * 38.0f;
+                _config.Settings.DynamicThresholdDbfs = -3.0f;
+                _config.Settings.ActivePreset = "custom1";
                 break;
             case "safe":
             default:
@@ -289,8 +360,31 @@ public class AudioEngine : IMMNotificationClient, IDisposable
 
     public void SetAppVolume(string processName, float volumePercent)
     {
-        // Invariant: PermadB never alters Windows Volume Mixer state or per-application volume.
-        Console.WriteLine($"[AudioEngine] SetAppVolume({processName}, {volumePercent:F0}%) ignored: Volume immutability invariant strictly enforced.");
+        float targetScalar = Math.Clamp(volumePercent / 100.0f, 0.0f, 1.0f);
+        _appBaselineVolume[processName] = targetScalar;
+
+        PostToAudioThread(() =>
+        {
+            if (_activeDevice == null) return;
+            try
+            {
+                var sessionManager = _activeDevice.AudioSessionManager;
+                var sessions = sessionManager.Sessions;
+                for (int i = 0; i < sessions.Count; i++)
+                {
+                    var s = sessions[i];
+                    var pid = (int)s.GetProcessID;
+                    if (pid > 0 && _processNameCache.TryGetValue(pid, out var pName))
+                    {
+                        if (string.Equals(pName, processName, StringComparison.OrdinalIgnoreCase))
+                        {
+                            s.SimpleAudioVolume.Volume = targetScalar;
+                        }
+                    }
+                }
+            }
+            catch { }
+        });
     }
 
     private void PostToAudioThread(Action action)
@@ -576,6 +670,17 @@ public class AudioEngine : IMMNotificationClient, IDisposable
             float linear = (float)Math.Pow(10.0, targetDbfs / 20.0);
             linear = Math.Clamp(linear, 0.001f, 0.8912509f);
             float dbfs = 20.0f * (float)Math.Log10(linear);
+
+            // When Application-Specific Limiting is enabled:
+            // Master APO runs in transparent peak-limiter mode (0 dBFS / -1.0 dBFS ceiling)
+            // so bypassed applications (like music players) can blast at 100% full volume!
+            // Protected applications (like Discord) are clamped individually at the WASAPI session level.
+            if (_config.Settings.AppFilteringEnabled && isEnabled)
+            {
+                linear = 0.8912509f;
+                dbfs = -1.0f;
+            }
+
             int enabledInt = isEnabled ? 1 : 0;
 
             if (_telemetryAcc == null)
@@ -745,8 +850,8 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                 OnPeakClamped?.Invoke(peakDbfs);
             }
 
-            // Per-Application Sound Mixer: Only scan sessions periodically (every 2s) to keep CPU at near 0%
-            if ((DateTime.UtcNow - _lastSessionScan).TotalSeconds > 10.0)
+            // Per-Application Sound Mixer & Active Session Leveler
+            if ((DateTime.UtcNow - _lastSessionScan).TotalSeconds > 1.5)
             {
                 _lastSessionScan = DateTime.UtcNow;
                 var appSessionsList = new List<AppSessionInfo>();
@@ -790,20 +895,56 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                         var appEstPeakSpl = Math.Clamp(profile.EstimatedMaxDbSpl + appPeakDbfs + masterDbAtten, 25.0f, 120.0f);
                         var appEstContinuousSpl = Math.Clamp(appEstPeakSpl - crestFactor, 25.0f, 105.0f);
 
+                        bool isProtected = IsAppProtected(procName);
                         bool isAppClamped = false;
+
+                        // Per-App Session Limiting:
+                        // Active when AppFilteringEnabled is true, or AppMixerGuardEnabled is true.
+                        // Clamps ONLY applications marked Protected (e.g. Discord).
+                        // Bypassed applications (e.g. Spotify, Music) are never ducked!
+                        if (_config.Settings.Enabled && (_config.Settings.AppFilteringEnabled || _config.Settings.AppMixerGuardEnabled))
+                        {
+                            if (isProtected)
+                            {
+                                if (!_appBaselineVolume.ContainsKey(procName))
+                                {
+                                    _appBaselineVolume[procName] = Math.Max(appVol, 0.2f);
+                                }
+                                float baseline = _appBaselineVolume[procName];
+
+                                if (appEstContinuousSpl > profile.TargetSafeDbSpl && rawAppPeak > 0.01f)
+                                {
+                                    float excessDb = appEstContinuousSpl - profile.TargetSafeDbSpl;
+                                    float reductionLinear = (float)Math.Pow(10.0, -excessDb / 20.0);
+                                    float targetVol = Math.Clamp(baseline * reductionLinear, 0.05f, baseline);
+
+                                    s.SimpleAudioVolume.Volume = Math.Min(appVol, targetVol);
+                                    isAppClamped = true;
+                                    _appLastClampTime[procName] = DateTime.UtcNow;
+                                }
+                                else if (_appLastClampTime.TryGetValue(procName, out var lastClamped))
+                                {
+                                    if ((DateTime.UtcNow - lastClamped).TotalSeconds > 1.2 && appVol < baseline)
+                                    {
+                                        s.SimpleAudioVolume.Volume = Math.Min(baseline, appVol + 0.05f);
+                                    }
+                                }
+                            }
+                        }
 
                         appSessionsList.Add(new AppSessionInfo
                         {
                             ProcessId = pid,
                             ProcessName = procName,
                             DisplayName = string.IsNullOrWhiteSpace(s.DisplayName) ? procName : s.DisplayName,
-                            VolumePercent = (float)Math.Round(appVol * 100.0f, 1),
+                            VolumePercent = (float)Math.Round(s.SimpleAudioVolume.Volume * 100.0f, 1),
                             PeakValue = (float)Math.Round(smoothedPeak, 3),
                             PeakDbfs = (float)Math.Round(appPeakDbfs, 1),
                             EstimatedDbSpl = (float)Math.Round(appEstContinuousSpl, 1),
                             IsMuted = appMute,
                             IsClamped = isAppClamped,
-                            IsUnsafe = false
+                            IsProtected = isProtected,
+                            IsUnsafe = appEstContinuousSpl > profile.TargetSafeDbSpl
                         });
                     }
                     _cachedAppSessions = appSessionsList;
@@ -828,7 +969,11 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                 ApplyToAllDevices = _config.Settings.ApplyToAllDevices,
                 ProtectMicrophoneInputs = _config.Settings.ProtectMicrophoneInputs,
                 ProtectedDevicesCount = _cachedProtectedCount,
-                AppMixerGuardEnabled = false,
+                AppMixerGuardEnabled = _config.Settings.AppMixerGuardEnabled,
+                AppFilteringEnabled = _config.Settings.AppFilteringEnabled,
+                Custom1PresetPercent = _config.Settings.Custom1PresetPercent,
+                Custom2PresetPercent = _config.Settings.Custom2PresetPercent,
+                AppProtectionRules = new Dictionary<string, bool>(_config.Settings.AppProtectionRules, StringComparer.OrdinalIgnoreCase),
                 AppSessions = _cachedAppSessions
             };
 
