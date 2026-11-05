@@ -311,12 +311,8 @@ public class AudioEngine : IMMNotificationClient, IDisposable
         {
             return val;
         }
-        // Known communication apps default to true (Protected so loud screams are clamped)
-        if (CommunicationApps.Contains(processName)) return true;
-        // Known music players default to false (Bypassed so music can blast)
-        if (MusicApps.Contains(processName)) return false;
-        // Unconfigured apps default to Bypassed (false) so that per-app status
-        // remains rock-solid and 100% synchronized whether App-Specific mode is ON or OFF.
+        // Zero hardcoded presets: all apps default to Bypassed (false).
+        // Only apps explicitly chosen by the user in Select Apps are limited.
         return false;
     }
 
@@ -775,7 +771,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                 // If no (only bypassed apps like music are playing): the APO runs in transparent peak-limiter mode (-1.0 dBFS)
                 // so music blasts freely at 100% full volume!
                 // Limiting is executed 100% inside audiodg.exe via PermadBApo.dll — ZERO volume mixer manipulation!
-                bool isProtectedAppActive = (DateTime.UtcNow - _lastProtectedAudioTime).TotalMilliseconds < 1500;
+                bool isProtectedAppActive = (DateTime.UtcNow - _lastProtectedAudioTime).TotalMilliseconds < 800;
                 if (!isProtectedAppActive)
                 {
                     linear = 0.8912509f;
@@ -1000,7 +996,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                         bool isProt = IsAppProtected(procName);
                         bool isAppClamped = false;
 
-                        bool isAppActive = rawAppPeak > 0.001f || smoothedPeak > 0.001f;
+                        bool isAppActive = rawAppPeak > 0.001f;
                         if (isProt && isAppActive)
                         {
                             _lastProtectedAudioTime = DateTime.UtcNow;
