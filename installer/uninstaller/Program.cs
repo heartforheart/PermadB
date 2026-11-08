@@ -265,7 +265,7 @@ static class Program
         }
         catch { }
 
-        // 4. Restart Windows Audio Service to release DLL
+        // 4. Restart Windows Audio Service to release DLL and guarantee audio restoration
         try
         {
             foreach (var p in Process.GetProcessesByName("audiodg"))
@@ -273,15 +273,17 @@ static class Program
                 try { p.Kill(); p.WaitForExit(2000); } catch { }
             }
 
+            var recoveryCmd = "Restart-Service -Name AudioEndpointBuilder -Force -ErrorAction SilentlyContinue; Restart-Service -Name audiosrv -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2; $s = Get-Service audiosrv -ErrorAction SilentlyContinue; if ($s -and $s.Status -ne 'Running') { $p = (Get-CimInstance Win32_Service -Filter \\\"Name='audiosrv'\\\").ProcessId; if ($p) { Stop-Process -Id $p -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 500 }; Start-Service audiosrv -ErrorAction SilentlyContinue }";
+
             var psi = new ProcessStartInfo
             {
                 FileName = "powershell.exe",
-                Arguments = "-NoProfile -ExecutionPolicy Bypass -Command \"Restart-Service -Name audiosrv -Force\"",
+                Arguments = $"-NoProfile -ExecutionPolicy Bypass -Command \"{recoveryCmd}\"",
                 CreateNoWindow = true,
                 UseShellExecute = false
             };
             var proc = Process.Start(psi);
-            proc?.WaitForExit(10000);
+            proc?.WaitForExit(15000);
         }
         catch { }
 

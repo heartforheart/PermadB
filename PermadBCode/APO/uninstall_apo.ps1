@@ -98,8 +98,30 @@ Write-Host "      COM unregistration complete." -ForegroundColor Green
 
 # Restart audio service
 Write-Host "[3/3] Restarting Windows Audio Service..." -ForegroundColor Yellow
-Restart-Service -Name "audiosrv" -Force
-Start-Sleep -Seconds 2
+try {
+    # 1. Kill audiodg to force clean reload
+    Get-Process audiodg -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+
+    # 2. Restart services safely
+    Restart-Service -Name "AudioEndpointBuilder" -Force -ErrorAction SilentlyContinue
+    Restart-Service -Name "audiosrv" -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2
+
+    # 3. Ensure Audiosrv is Running; if hung in StopPending, force-recover
+    $svc = Get-Service audiosrv -ErrorAction SilentlyContinue
+    if ($svc -and $svc.Status -ne 'Running') {
+        $p = (Get-CimInstance Win32_Service -Filter "Name='audiosrv'").ProcessId
+        if ($p -and $p -gt 0) {
+            Stop-Process -Id $p -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Milliseconds 500
+        }
+        Start-Service audiosrv -ErrorAction SilentlyContinue
+    }
+}
+catch {
+    Start-Service AudioEndpointBuilder -ErrorAction SilentlyContinue
+    Start-Service audiosrv -ErrorAction SilentlyContinue
+}
 
 Write-Host ""
 Write-Host "[SUCCESS] PermadB Limiter APO uninstalled successfully." -ForegroundColor Green
