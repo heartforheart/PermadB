@@ -13,6 +13,8 @@ public class TrayIconManager : IDisposable
     private readonly AudioEngine _engine;
     private readonly NotifyIcon _notifyIcon;
     private readonly ContextMenuStrip _contextMenu;
+    private readonly Font _fontBold = new(SystemFonts.DefaultFont, FontStyle.Bold);
+    private readonly Font _fontItalic = new(SystemFonts.DefaultFont, FontStyle.Italic);
 
     // Menu items to update dynamically
     private ToolStripMenuItem _headerItem = null!;
@@ -339,13 +341,18 @@ public class TrayIconManager : IDisposable
     {
         try
         {
-            _appFilteringItem.DropDownItems.Clear();
+            while (_appFilteringItem.DropDownItems.Count > 0)
+            {
+                var item = _appFilteringItem.DropDownItems[0];
+                _appFilteringItem.DropDownItems.RemoveAt(0);
+                item.Dispose();
+            }
 
             // 1. Mode toggle
             var modeToggle = new ToolStripMenuItem("🛡️ Enable App-Specific Limiting Mode")
             {
                 Checked = _config.Settings.AppFilteringEnabled,
-                Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold)
+                Font = _fontBold
             };
             modeToggle.Click += (s, e) =>
             {
@@ -368,7 +375,7 @@ public class TrayIconManager : IDisposable
             var header = new ToolStripMenuItem("Choose Apps to Limit (✓ = Clamped, Blank = Bypassed):")
             {
                 Enabled = false,
-                Font = new Font(SystemFonts.DefaultFont, FontStyle.Italic)
+                Font = _fontItalic
             };
             _appFilteringItem.DropDownItems.Add(header);
 
@@ -488,5 +495,7 @@ public class TrayIconManager : IDisposable
         _notifyIcon.Icon?.Dispose();
         _notifyIcon.Dispose();
         _contextMenu.Dispose();
+        _fontBold.Dispose();
+        _fontItalic.Dispose();
     }
 }

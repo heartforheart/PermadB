@@ -146,6 +146,9 @@ public class AudioEngine : IMMNotificationClient, IDisposable
     private float _userBaselineVolume = -1.0f;
     private DateTime _lastSessionScan = DateTime.MinValue;
     private List<AppSessionInfo> _cachedAppSessions = new();
+    private readonly object _discoverableAppsLock = new();
+    private List<AppSessionInfo> _cachedDiscoveredApps = new();
+    private DateTime _lastDiscoveredAppsScan = DateTime.MinValue;
 
     // Process name and peak tracking for active WASAPI audio sessions
     private readonly ConcurrentDictionary<int, string> _processNameCache = new();
@@ -318,87 +321,130 @@ public class AudioEngine : IMMNotificationClient, IDisposable
 
     public List<AppSessionInfo> GetDiscoverableAudioApps()
     {
-        var dict = new Dictionary<string, AppSessionInfo>(StringComparer.OrdinalIgnoreCase);
-
-        // 1. Add active WASAPI audio sessions with real-time evaluated protection
-        lock (_stateLock)
+        lock (_discoverableAppsLock)
         {
-            foreach (var app in _cachedAppSessions)
+            var now = DateTime.UtcNow;
+            if ((now - _lastDiscoveredAppsScan).TotalSeconds < 3.0 && _cachedDiscoveredApps.Count > 0)
             {
-                if (!string.IsNullOrWhiteSpace(app.ProcessName))
+                // Return fresh status projections from cached scan without re-querying all processes
+                var fastList = new List<AppSessionInfo>(_cachedDiscoveredApps.Count);
+                foreach (var app in _cachedDiscoveredApps)
                 {
-                    app.IsProtected = IsAppProtected(app.ProcessName);
-                    dict[app.ProcessName] = app;
-                }
-            }
-        }
-
-        // 2. Add saved configured rules from settings
-        foreach (var kvp in _config.Settings.AppProtectionRules)
-        {
-            if (!dict.ContainsKey(kvp.Key))
-            {
-                dict[kvp.Key] = new AppSessionInfo
-                {
-                    ProcessName = kvp.Key,
-                    DisplayName = kvp.Key,
-                    IsProtected = kvp.Value,
-                    IsClamped = false,
-                    IsMuted = false,
-                    VolumePercent = 100.0f,
-                    PeakDbfs = -96.0f,
-                    EstimatedDbSpl = 0.0f
-                };
-            }
-        }
-
-        // 3. Scan running communication, music, and browser processes
-        try
-        {
-            var processes = Process.GetProcesses();
-            foreach (var p in processes)
-            {
-                try
-                {
-                    string pName = p.ProcessName;
-                    if (dict.ContainsKey(pName)) continue;
-
-                    bool isTarget = CommunicationApps.Contains(pName) ||
-                                    MusicApps.Contains(pName) ||
-                                    BrowserApps.Contains(pName) ||
-                                    (!string.IsNullOrEmpty(p.MainWindowTitle) && 
-                                     !pName.Equals("explorer", StringComparison.OrdinalIgnoreCase) && 
-                                     !pName.Equals("PermadB", StringComparison.OrdinalIgnoreCase) &&
-                                     !pName.Equals("TextInputHost", StringComparison.OrdinalIgnoreCase));
-
-                    if (isTarget)
+                    fastList.Add(new AppSessionInfo
                     {
-                        bool isProt = IsAppProtected(pName);
-                        dict[pName] = new AppSessionInfo
-                        {
-                            ProcessId = p.Id,
-                            ProcessName = pName,
-                            DisplayName = !string.IsNullOrWhiteSpace(p.MainWindowTitle) ? $"{pName} ({p.MainWindowTitle})" : pName,
-                            IsProtected = isProt,
-                            IsClamped = false,
-                            IsMuted = false,
-                            VolumePercent = 100.0f,
-                            PeakDbfs = -96.0f,
-                            EstimatedDbSpl = 0.0f
-                        };
+                        ProcessId = app.ProcessId,
+                        ProcessName = app.ProcessName,
+                        DisplayName = app.DisplayName,
+                        VolumePercent = app.VolumePercent,
+                        PeakValue = app.PeakValue,
+                        PeakDbfs = app.PeakDbfs,
+                        EstimatedDbSpl = app.EstimatedDbSpl,
+                        IsMuted = app.IsMuted,
+                        IsClamped = app.IsClamped,
+                        IsProtected = IsAppProtected(app.ProcessName),
+                        IsUnsafe = app.IsUnsafe
+                    });
+                }
+                return fastList;
+            }
+
+            var dict = new Dictionary<string, AppSessionInfo>(StringComparer.OrdinalIgnoreCase);
+
+            // 1. Add active WASAPI audio sessions with real-time evaluated protection
+            lock (_stateLock)
+            {
+                foreach (var app in _cachedAppSessions)
+                {
+                    if (!string.IsNullOrWhiteSpace(app.ProcessName))
+                    {
+                        app.IsProtected = IsAppProtected(app.ProcessName);
+                        dict[app.ProcessName] = app;
                     }
                 }
-                catch { }
             }
-        }
-        catch { }
 
-        // Sort: active sessions first, then communication apps, then alphabetical
-        return dict.Values
-            .OrderByDescending(a => a.PeakValue > 0.001f)
-            .ThenByDescending(a => CommunicationApps.Contains(a.ProcessName))
-            .ThenBy(a => a.ProcessName)
-            .ToList();
+            // 2. Add saved configured rules from settings
+            foreach (var kvp in _config.Settings.AppProtectionRules)
+            {
+                if (!dict.ContainsKey(kvp.Key))
+                {
+                    dict[kvp.Key] = new AppSessionInfo
+                    {
+                        ProcessName = kvp.Key,
+                        DisplayName = kvp.Key,
+                        IsProtected = kvp.Value,
+                        IsClamped = false,
+                        IsMuted = false,
+                        VolumePercent = 100.0f,
+                        PeakDbfs = -96.0f,
+                        EstimatedDbSpl = 0.0f
+                    };
+                }
+            }
+
+            // 3. Scan running communication, music, and browser processes with guaranteed disposal of all Process objects
+            Process[]? processes = null;
+            try
+            {
+                processes = Process.GetProcesses();
+                foreach (var p in processes)
+                {
+                    try
+                    {
+                        string pName = p.ProcessName;
+                        if (dict.ContainsKey(pName)) continue;
+
+                        bool isTarget = CommunicationApps.Contains(pName) ||
+                                        MusicApps.Contains(pName) ||
+                                        BrowserApps.Contains(pName) ||
+                                        (!string.IsNullOrEmpty(p.MainWindowTitle) && 
+                                         !pName.Equals("explorer", StringComparison.OrdinalIgnoreCase) && 
+                                         !pName.Equals("PermadB", StringComparison.OrdinalIgnoreCase) &&
+                                         !pName.Equals("TextInputHost", StringComparison.OrdinalIgnoreCase));
+
+                        if (isTarget)
+                        {
+                            bool isProt = IsAppProtected(pName);
+                            dict[pName] = new AppSessionInfo
+                            {
+                                ProcessId = p.Id,
+                                ProcessName = pName,
+                                DisplayName = !string.IsNullOrWhiteSpace(p.MainWindowTitle) ? $"{pName} ({p.MainWindowTitle})" : pName,
+                                IsProtected = isProt,
+                                IsClamped = false,
+                                IsMuted = false,
+                                VolumePercent = 100.0f,
+                                PeakDbfs = -96.0f,
+                                EstimatedDbSpl = 0.0f
+                            };
+                        }
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+            finally
+            {
+                if (processes != null)
+                {
+                    foreach (var p in processes)
+                    {
+                        try { p.Dispose(); } catch { }
+                    }
+                }
+            }
+
+            // Sort: active sessions first, then communication apps, then alphabetical
+            var result = dict.Values
+                .OrderByDescending(a => a.PeakValue > 0.001f)
+                .ThenByDescending(a => CommunicationApps.Contains(a.ProcessName))
+                .ThenBy(a => a.ProcessName)
+                .ToList();
+
+            _cachedDiscoveredApps = result;
+            _lastDiscoveredAppsScan = now;
+            return result;
+        }
     }
 
     public void ApplyPreset(string preset)
@@ -963,75 +1009,87 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                     for (int i = 0; i < sessionCount; i++)
                     {
                         var s = sessions[i];
-                        if (s.State == AudioSessionState.AudioSessionStateExpired) continue;
-
-                        var pid = (int)s.GetProcessID;
-                        string procName = "System Sounds";
-                        if (pid > 0)
+                        try
                         {
-                            procName = _processNameCache.GetOrAdd(pid, p =>
+                            if (s.State == AudioSessionState.AudioSessionStateExpired) continue;
+
+                            var pid = (int)s.GetProcessID;
+                            string procName = "System Sounds";
+                            if (pid > 0)
                             {
-                                try { return Process.GetProcessById(p).ProcessName; }
-                                catch { return $"PID {p}"; }
+                                procName = _processNameCache.GetOrAdd(pid, p =>
+                                {
+                                    try
+                                    {
+                                        using var proc = Process.GetProcessById(p);
+                                        return proc.ProcessName;
+                                    }
+                                    catch { return $"PID {p}"; }
+                                });
+                            }
+
+                            var appVol = s.SimpleAudioVolume.Volume;
+                            var appMeter = s.AudioMeterInformation;
+                            var rawAppPeak = appMeter.MasterPeakValue;
+                            var appMute = s.SimpleAudioVolume.Mute;
+
+                            var smoothedPeak = _appSmoothedPeak.AddOrUpdate(
+                                procName,
+                                rawAppPeak,
+                                (_, prev) => Math.Max(rawAppPeak, prev * 0.75f + rawAppPeak * 0.25f)
+                            );
+
+                            var appPeakDbfs = smoothedPeak > 0.00001f ? 20.0f * (float)Math.Log10(smoothedPeak) : -96.0f;
+                            bool isVoip = CommunicationApps.Contains(procName);
+                            float crestFactor = isVoip ? 15.0f : 11.0f;
+                            var appEstPeakSpl = Math.Clamp(profile.EstimatedMaxDbSpl + appPeakDbfs + masterDbAtten, 25.0f, 120.0f);
+                            var appEstContinuousSpl = Math.Clamp(appEstPeakSpl - crestFactor, 25.0f, 105.0f);
+
+                            bool isProt = IsAppProtected(procName);
+                            bool isAppClamped = false;
+
+                            bool isAppActive = rawAppPeak > 0.001f;
+                            if (isProt && isAppActive)
+                            {
+                                _lastProtectedAudioTime = DateTime.UtcNow;
+                            }
+
+                            if (_config.Settings.Enabled)
+                            {
+                                if (_config.Settings.AppFilteringEnabled)
+                                {
+                                    isAppClamped = isProt && isAppActive && isClamping;
+                                }
+                                else
+                                {
+                                    isAppClamped = isClamping;
+                                }
+                            }
+
+                            // INVARIANT: PermadB NEVER modifies Windows Volume Mixer sliders (s.SimpleAudioVolume.Volume).
+                            // All digital limiting is executed deterministically on raw PCM inside audiodg.exe via PermadBApo.dll.
+
+                            appSessionsList.Add(new AppSessionInfo
+                            {
+                                ProcessId = pid,
+                                ProcessName = procName,
+                                DisplayName = string.IsNullOrWhiteSpace(s.DisplayName) ? procName : s.DisplayName,
+                                VolumePercent = (float)Math.Round(appVol * 100.0f, 1),
+                                PeakValue = (float)Math.Round(smoothedPeak, 3),
+                                PeakDbfs = (float)Math.Round(appPeakDbfs, 1),
+                                EstimatedDbSpl = (float)Math.Round(appEstContinuousSpl, 1),
+                                IsMuted = appMute,
+                                IsClamped = isAppClamped,
+                                IsProtected = isProt,
+                                IsUnsafe = appEstContinuousSpl > profile.TargetSafeDbSpl
                             });
                         }
-
-                        var appVol = s.SimpleAudioVolume.Volume;
-                        var appMeter = s.AudioMeterInformation;
-                        var rawAppPeak = appMeter.MasterPeakValue;
-                        var appMute = s.SimpleAudioVolume.Mute;
-
-                        var smoothedPeak = _appSmoothedPeak.AddOrUpdate(
-                            procName,
-                            rawAppPeak,
-                            (_, prev) => Math.Max(rawAppPeak, prev * 0.75f + rawAppPeak * 0.25f)
-                        );
-
-                        var appPeakDbfs = smoothedPeak > 0.00001f ? 20.0f * (float)Math.Log10(smoothedPeak) : -96.0f;
-                        bool isVoip = CommunicationApps.Contains(procName);
-                        float crestFactor = isVoip ? 15.0f : 11.0f;
-                        var appEstPeakSpl = Math.Clamp(profile.EstimatedMaxDbSpl + appPeakDbfs + masterDbAtten, 25.0f, 120.0f);
-                        var appEstContinuousSpl = Math.Clamp(appEstPeakSpl - crestFactor, 25.0f, 105.0f);
-
-                        bool isProt = IsAppProtected(procName);
-                        bool isAppClamped = false;
-
-                        bool isAppActive = rawAppPeak > 0.001f;
-                        if (isProt && isAppActive)
+                        finally
                         {
-                            _lastProtectedAudioTime = DateTime.UtcNow;
+                            try { (s as IDisposable)?.Dispose(); } catch { }
                         }
-
-                        if (_config.Settings.Enabled)
-                        {
-                            if (_config.Settings.AppFilteringEnabled)
-                            {
-                                isAppClamped = isProt && isAppActive && isClamping;
-                            }
-                            else
-                            {
-                                isAppClamped = isClamping;
-                            }
-                        }
-
-                        // INVARIANT: PermadB NEVER modifies Windows Volume Mixer sliders (s.SimpleAudioVolume.Volume).
-                        // All digital limiting is executed deterministically on raw PCM inside audiodg.exe via PermadBApo.dll.
-
-                        appSessionsList.Add(new AppSessionInfo
-                        {
-                            ProcessId = pid,
-                            ProcessName = procName,
-                            DisplayName = string.IsNullOrWhiteSpace(s.DisplayName) ? procName : s.DisplayName,
-                            VolumePercent = (float)Math.Round(appVol * 100.0f, 1),
-                            PeakValue = (float)Math.Round(smoothedPeak, 3),
-                            PeakDbfs = (float)Math.Round(appPeakDbfs, 1),
-                            EstimatedDbSpl = (float)Math.Round(appEstContinuousSpl, 1),
-                            IsMuted = appMute,
-                            IsClamped = isAppClamped,
-                            IsProtected = isProt,
-                            IsUnsafe = appEstContinuousSpl > profile.TargetSafeDbSpl
-                        });
                     }
+                    try { (sessions as IDisposable)?.Dispose(); } catch { }
                     _cachedAppSessions = appSessionsList;
                     InternalSendCeilingToApo();
                 }
@@ -1059,8 +1117,8 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                 AppFilteringEnabled = _config.Settings.AppFilteringEnabled,
                 Custom1PresetPercent = _config.Settings.Custom1PresetPercent,
                 Custom2PresetPercent = _config.Settings.Custom2PresetPercent,
-                AppProtectionRules = new Dictionary<string, bool>(_config.Settings.AppProtectionRules, StringComparer.OrdinalIgnoreCase),
-                AppSessions = GetDiscoverableAudioApps()
+                AppProtectionRules = _config.Settings.AppProtectionRules,
+                AppSessions = _cachedAppSessions
             };
 
             LatestMetrics = m;

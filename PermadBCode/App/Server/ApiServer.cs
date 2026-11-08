@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Text;
@@ -19,7 +20,9 @@ public class ApiServer : IDisposable
     private readonly HttpListener _listener;
     private readonly string _wwwroot;
     private readonly CancellationTokenSource _cts = new();
-    private readonly ConcurrentBag<HttpListenerResponse> _sseClients = new();
+    private readonly ConcurrentDictionary<HttpListenerResponse, byte> _sseClients = new();
+    private long _lastSseBroadcastMs = 0;
+    private readonly Stopwatch _sseStopwatch = Stopwatch.StartNew();
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -290,7 +293,7 @@ public class ApiServer : IDisposable
                 res.ContentType = "text/event-stream";
                 res.Headers.Add("Cache-Control", "no-cache");
                 res.Headers.Add("Connection", "keep-alive");
-                _sseClients.Add(res);
+                _sseClients.TryAdd(res, 0);
                 return;
             }
 
@@ -312,10 +315,15 @@ public class ApiServer : IDisposable
     {
         if (_sseClients.IsEmpty) return;
 
+        // Rate-limit SSE emissions to 10 Hz (every 100 ms) to avoid serialization pressure
+        long now = _sseStopwatch.ElapsedMilliseconds;
+        if (now - _lastSseBroadcastMs < 100) return;
+        _lastSseBroadcastMs = now;
+
         var json = JsonSerializer.Serialize(metrics, JsonOpts);
         var bytes = Encoding.UTF8.GetBytes($"data: {json}\n\n");
 
-        foreach (var client in _sseClients.ToArray())
+        foreach (var client in _sseClients.Keys)
         {
             try
             {
@@ -324,7 +332,8 @@ public class ApiServer : IDisposable
             }
             catch
             {
-                // Client disconnected
+                // Client disconnected - remove from dictionary immediately to prevent memory leak
+                _sseClients.TryRemove(client, out _);
                 try { client.Close(); } catch { }
             }
         }
@@ -426,6 +435,13 @@ public class ApiServer : IDisposable
             _listener.Close();
         }
         catch { }
+
+        foreach (var client in _sseClients.Keys)
+        {
+            try { client.Close(); } catch { }
+        }
+        _sseClients.Clear();
+
         _engine.OnMetricsUpdated -= BroadcastMetricsToSse;
     }
 }

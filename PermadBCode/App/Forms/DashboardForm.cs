@@ -48,6 +48,11 @@ public class DashboardForm : Form
     private readonly Color _textWhite = Color.FromArgb(248, 250, 252); // Slate 50
     private readonly Color _textMuted = Color.FromArgb(148, 163, 184); // Slate 400
 
+    // Cached Fonts for Row Population (Zero GDI churn)
+    private readonly Font _fontAppName = new("Segoe UI", 9.0f, FontStyle.Bold);
+    private readonly Font _fontAppStatus = new("Segoe UI", 7.5f, FontStyle.Regular);
+    private readonly Font _fontAppButton = new("Segoe UI", 7.5f, FontStyle.Bold);
+
     // UI Controls
     private Panel _headerPanel = null!;
     private Label _titleLabel = null!;
@@ -686,7 +691,12 @@ public class DashboardForm : Form
     private void PopulateAppManagerRows()
     {
         _appsScrollPanel.SuspendLayout();
-        _appsScrollPanel.Controls.Clear();
+        while (_appsScrollPanel.Controls.Count > 0)
+        {
+            var oldCtrl = _appsScrollPanel.Controls[0];
+            _appsScrollPanel.Controls.RemoveAt(0);
+            oldCtrl.Dispose();
+        }
 
         var apps = _engine.GetDiscoverableAudioApps();
         var filter = _txtAppSearch?.Text.Trim() ?? "";
@@ -717,7 +727,7 @@ public class DashboardForm : Form
             var nameLbl = new Label
             {
                 Text = procName,
-                Font = new Font("Segoe UI", 9.0f, FontStyle.Bold),
+                Font = _fontAppName,
                 ForeColor = _textWhite,
                 Location = new Point(10, 6),
                 Size = new Size(220, 18),
@@ -728,7 +738,7 @@ public class DashboardForm : Form
             var statusLbl = new Label
             {
                 Text = status,
-                Font = new Font("Segoe UI", 7.5f),
+                Font = _fontAppStatus,
                 ForeColor = isProtected ? _accentGreen : _textMuted,
                 Location = new Point(10, 25),
                 Size = new Size(220, 16)
@@ -737,7 +747,7 @@ public class DashboardForm : Form
             var toggleBtn = new Button
             {
                 Text = isProtected ? "🛡️ LIMITED" : "⚡ BYPASSED",
-                Font = new Font("Segoe UI", 7.5f, FontStyle.Bold),
+                Font = _fontAppButton,
                 Size = new Size(110, 28),
                 Location = new Point(244, 9),
                 FlatStyle = FlatStyle.Flat,
@@ -1111,6 +1121,18 @@ public class DecibelMeterControl : Panel
     private readonly Color _textWhite = Color.FromArgb(248, 250, 252);
     private readonly Color _textMuted = Color.FromArgb(148, 163, 184);
 
+    // Cached GDI resources to eliminate allocation churn at 30 FPS
+    private readonly Font _fontLarge = new("Segoe UI", 18.0f, FontStyle.Bold);
+    private readonly Font _fontBadge = new("Segoe UI", 8.0f, FontStyle.Bold);
+    private readonly Font _fontSub = new("Segoe UI", 8.0f, FontStyle.Regular);
+    private readonly Pen _borderPen = new(Color.FromArgb(51, 65, 85), 1.0f);
+    private readonly Pen _peakPen = new(Color.White, 2.0f);
+    private readonly Pen _ceilingPen = new(Color.FromArgb(56, 189, 248), 2.0f) { DashStyle = DashStyle.Dot };
+    private readonly SolidBrush _brushWhite = new(Color.FromArgb(248, 250, 252));
+    private readonly SolidBrush _brushMuted = new(Color.FromArgb(148, 163, 184));
+    private readonly SolidBrush _brushSky = new(Color.FromArgb(56, 189, 248));
+    private readonly SolidBrush _bgGrooveBrush = new(Color.FromArgb(15, 23, 42));
+
     public DecibelMeterControl()
     {
         this.DoubleBuffered = true;
@@ -1151,6 +1173,24 @@ public class DecibelMeterControl : Panel
         this.Invalidate();
     }
 
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _fontLarge.Dispose();
+            _fontBadge.Dispose();
+            _fontSub.Dispose();
+            _borderPen.Dispose();
+            _peakPen.Dispose();
+            _ceilingPen.Dispose();
+            _brushWhite.Dispose();
+            _brushMuted.Dispose();
+            _brushSky.Dispose();
+            _bgGrooveBrush.Dispose();
+        }
+        base.Dispose(disposing);
+    }
+
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
@@ -1158,16 +1198,11 @@ public class DecibelMeterControl : Panel
         g.SmoothingMode = SmoothingMode.AntiAlias;
 
         // Draw card border
-        using (var borderPen = new Pen(_borderDark, 1.0f))
-        {
-            g.DrawRectangle(borderPen, 0, 0, this.Width - 1, this.Height - 1);
-        }
+        g.DrawRectangle(_borderPen, 0, 0, this.Width - 1, this.Height - 1);
 
         // 1. Decibel Readout Text
         var dbText = $"{_displaySpl:F1} dBA";
-        using var fontLarge = new Font("Segoe UI", 18.0f, FontStyle.Bold);
-        using var brushWhite = new SolidBrush(_textWhite);
-        g.DrawString(dbText, fontLarge, brushWhite, 12, 10);
+        g.DrawString(dbText, _fontLarge, _brushWhite, 12, 10);
 
         // 2. Status Badge Pill (Right side)
         string statusText;
@@ -1198,8 +1233,7 @@ public class DecibelMeterControl : Panel
             badgeFg = _textMuted;
         }
 
-        using var fontBadge = new Font("Segoe UI", 8.0f, FontStyle.Bold);
-        var badgeSize = g.MeasureString(statusText, fontBadge);
+        var badgeSize = g.MeasureString(statusText, _fontBadge);
         var badgeRect = new Rectangle(this.Width - (int)badgeSize.Width - 24, 16, (int)badgeSize.Width + 12, 22);
 
         using (var badgeBrush = new SolidBrush(badgeBg))
@@ -1208,7 +1242,7 @@ public class DecibelMeterControl : Panel
         }
         using (var badgeTextBrush = new SolidBrush(badgeFg))
         {
-            g.DrawString(statusText, fontBadge, badgeTextBrush, badgeRect.X + 6, badgeRect.Y + 4);
+            g.DrawString(statusText, _fontBadge, badgeTextBrush, badgeRect.X + 6, badgeRect.Y + 4);
         }
 
         // 3. Audio Meter Bar Gauge
@@ -1218,10 +1252,7 @@ public class DecibelMeterControl : Panel
         int barHeight = 16;
 
         // Background groove
-        using (var bgGroove = new SolidBrush(_bgDark))
-        {
-            g.FillRectangle(bgGroove, barX, barY, barWidth, barHeight);
-        }
+        g.FillRectangle(_bgGrooveBrush, barX, barY, barWidth, barHeight);
 
         // Fill ratio (range 30 dBA to 105 dBA)
         float normalizedSpl = Math.Clamp((_displaySpl - 30.0f) / 75.0f, 0.0f, 1.0f);
@@ -1242,38 +1273,24 @@ public class DecibelMeterControl : Panel
         // Peak hold tick mark
         float normPeak = Math.Clamp((_peakHold - 30.0f) / 75.0f, 0.0f, 1.0f);
         int peakX = barX + (int)(barWidth * normPeak);
-        using (var peakPen = new Pen(Color.White, 2.0f))
-        {
-            g.DrawLine(peakPen, peakX, barY - 2, peakX, barY + barHeight + 2);
-        }
+        g.DrawLine(_peakPen, peakX, barY - 2, peakX, barY + barHeight + 2);
 
         // Limiter Ceiling Marker Line (e.g. 75 dBA)
         float normCeiling = Math.Clamp((ceilingSpl - 30.0f) / 75.0f, 0.0f, 1.0f);
         int ceilingX = barX + (int)(barWidth * normCeiling);
-
-        using (var ceilingPen = new Pen(_sky, 2.0f) { DashStyle = DashStyle.Dot })
-        {
-            g.DrawLine(ceilingPen, ceilingX, barY - 4, ceilingX, barY + barHeight + 4);
-        }
+        g.DrawLine(_ceilingPen, ceilingX, barY - 4, ceilingX, barY + barHeight + 4);
 
         // Outer border on meter
-        using (var meterPen = new Pen(_borderDark, 1.0f))
-        {
-            g.DrawRectangle(meterPen, barX, barY, barWidth, barHeight);
-        }
+        g.DrawRectangle(_borderPen, barX, barY, barWidth, barHeight);
 
         // 4. Subtext row
-        using var fontSub = new Font("Segoe UI", 8.0f, FontStyle.Regular);
-        using var brushMuted = new SolidBrush(_textMuted);
-
         var volText = $"Windows Volume: {_metrics.CurrentVolumePercent:F0}%";
-        g.DrawString(volText, fontSub, brushMuted, 14, 76);
+        g.DrawString(volText, _fontSub, _brushMuted, 14, 76);
 
         var ceilingTag = $"▲ Limiter Ceiling: {_metrics.SafeCeilingPercent:F0}%";
-        var tagSize = g.MeasureString(ceilingTag, fontSub);
+        var tagSize = g.MeasureString(ceilingTag, _fontSub);
         int tagX = Math.Clamp(ceilingX - (int)(tagSize.Width / 2), 14, this.Width - (int)tagSize.Width - 14);
-        using var brushSky = new SolidBrush(_sky);
-        g.DrawString(ceilingTag, fontSub, brushSky, tagX, 76);
+        g.DrawString(ceilingTag, _fontSub, _brushSky, tagX, 76);
     }
 }
 
@@ -1307,6 +1324,20 @@ public class PresetCardControl : Panel
     private readonly Color _textMuted = Color.FromArgb(148, 163, 184);
     private readonly Color _sky = Color.FromArgb(56, 189, 248);
 
+    // Cached GDI fonts and brushes (Zero GDI churn on hover/paint)
+    private readonly Font _fontTitle = new("Segoe UI", 8.5f, FontStyle.Bold);
+    private readonly Font _fontCheck = new("Segoe UI", 8.0f, FontStyle.Bold);
+    private readonly Font _fontCeiling = new("Segoe UI", 12.0f, FontStyle.Bold);
+    private readonly Font _fontTag = new("Segoe UI", 7.0f, FontStyle.Regular);
+    private readonly SolidBrush _brushTitle = new(Color.FromArgb(248, 250, 252));
+    private readonly SolidBrush _brushCheck = new(Color.FromArgb(56, 189, 248));
+    private readonly SolidBrush _brushCeilingActive = new(Color.FromArgb(56, 189, 248));
+    private readonly SolidBrush _brushCeilingNormal = new(Color.FromArgb(248, 250, 252));
+    private readonly SolidBrush _brushTag = new(Color.FromArgb(148, 163, 184));
+    private readonly Pen _penActive = new(Color.FromArgb(56, 189, 248), 2.0f);
+    private readonly Pen _penHover = new(Color.FromArgb(56, 189, 248), 1.0f);
+    private readonly Pen _penDark = new(Color.FromArgb(51, 65, 85), 1.0f);
+
     public PresetCardControl(string title, string ceilingText, string tagText, Action onClick, Action? onRightClick = null)
     {
         Title = title;
@@ -1336,6 +1367,26 @@ public class PresetCardControl : Panel
         };
     }
 
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _fontTitle.Dispose();
+            _fontCheck.Dispose();
+            _fontCeiling.Dispose();
+            _fontTag.Dispose();
+            _brushTitle.Dispose();
+            _brushCheck.Dispose();
+            _brushCeilingActive.Dispose();
+            _brushCeilingNormal.Dispose();
+            _brushTag.Dispose();
+            _penActive.Dispose();
+            _penHover.Dispose();
+            _penDark.Dispose();
+        }
+        base.Dispose(disposing);
+    }
+
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
@@ -1350,33 +1401,22 @@ public class PresetCardControl : Panel
             g.FillRectangle(bgBrush, bounds);
         }
 
-        var borderColor = IsActive ? _borderActive : (_isHovered ? _sky : _borderDark);
-        using (var pen = new Pen(borderColor, IsActive ? 2.0f : 1.0f))
-        {
-            g.DrawRectangle(pen, bounds);
-        }
+        var pen = IsActive ? _penActive : (_isHovered ? _penHover : _penDark);
+        g.DrawRectangle(pen, bounds);
 
         // Title
-        using var fontTitle = new Font("Segoe UI", 8.5f, FontStyle.Bold);
-        using var brushTitle = new SolidBrush(_textWhite);
-        g.DrawString(Title, fontTitle, brushTitle, 8, 8);
+        g.DrawString(Title, _fontTitle, _brushTitle, 8, 8);
 
         // Active check badge
         if (IsActive)
         {
-            using var fontCheck = new Font("Segoe UI", 8.0f, FontStyle.Bold);
-            using var brushCheck = new SolidBrush(_borderActive);
-            g.DrawString("✓", fontCheck, brushCheck, this.Width - 18, 8);
+            g.DrawString("✓", _fontCheck, _brushCheck, this.Width - 18, 8);
         }
 
         // Ceiling Text (e.g. 65%)
-        using var fontCeiling = new Font("Segoe UI", 12.0f, FontStyle.Bold);
-        using var brushCeiling = new SolidBrush(IsActive ? _borderActive : _textWhite);
-        g.DrawString(CeilingText, fontCeiling, brushCeiling, 8, 30);
+        g.DrawString(CeilingText, _fontCeiling, IsActive ? _brushCeilingActive : _brushCeilingNormal, 8, 30);
 
         // Tag (Recommended / Relaxed / Dynamic / Saved)
-        using var fontTag = new Font("Segoe UI", 7.0f, FontStyle.Regular);
-        using var brushTag = new SolidBrush(_textMuted);
-        g.DrawString(TagText, fontTag, brushTag, 8, 62);
+        g.DrawString(TagText, _fontTag, _brushTag, 8, 62);
     }
 }
