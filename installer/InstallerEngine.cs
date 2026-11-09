@@ -411,10 +411,13 @@ public static class InstallerEngine
         const string pkeyLfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},1";
         const string pkeyGfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},2";
         const string pkeySfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},5";
+        const string pkeyMfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},6";
         const string pkeyEfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},7";
         const string pkeyCompositeSfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},13";
+        const string pkeyCompositeMfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},14";
         const string pkeyCompositeEfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},15";
         const string pkeySfxModes = "{d3993a3f-99c2-4402-b5ec-a92a0367664b},5";
+        const string pkeyMfxModes = "{d3993a3f-99c2-4402-b5ec-a92a0367664b},6";
         const string pkeyEfxModes = "{d3993a3f-99c2-4402-b5ec-a92a0367664b},7";
 
         var targetModes = new[]
@@ -554,6 +557,36 @@ public static class InstallerEngine
                                 fxKey.SetValue(pkeyCompositeSfx, new string[] { clsidSfx }, RegistryValueKind.MultiString);
                             }
 
+                            // 1b. Configure MFX (Pre-Mix Mode Effect)
+                            var existingMfx = fxKey.GetValue(pkeyMfx) as string;
+                            if (!string.IsNullOrEmpty(existingMfx) && !string.Equals(existingMfx, clsidSfx, StringComparison.OrdinalIgnoreCase))
+                            {
+                                if (fxKey.GetValue("PermadB_Backup_MFX") == null)
+                                {
+                                    fxKey.SetValue("PermadB_Backup_MFX", existingMfx, RegistryValueKind.String);
+                                }
+                            }
+                            fxKey.SetValue(pkeyMfx, clsidSfx, RegistryValueKind.String);
+
+                            var existingCompMfx = fxKey.GetValue(pkeyCompositeMfx) as string[];
+                            if (existingCompMfx != null && existingCompMfx.Length > 0)
+                            {
+                                if (!existingCompMfx.Any(s => string.Equals(s, clsidSfx, StringComparison.OrdinalIgnoreCase)))
+                                {
+                                    if (fxKey.GetValue("PermadB_Backup_CompositeMFX") == null)
+                                    {
+                                        fxKey.SetValue("PermadB_Backup_CompositeMFX", existingCompMfx, RegistryValueKind.MultiString);
+                                    }
+                                    var newCompMfx = existingCompMfx.Append(clsidSfx).ToArray();
+                                    fxKey.SetValue(pkeyCompositeMfx, newCompMfx, RegistryValueKind.MultiString);
+                                }
+                            }
+                            else
+                            {
+                                fxKey.SetValue("PermadB_Created_CompositeMFX", 1, RegistryValueKind.DWord);
+                                fxKey.SetValue(pkeyCompositeMfx, new string[] { clsidSfx }, RegistryValueKind.MultiString);
+                            }
+
                             // 2. Configure Legacy GFX (Global Effect)
                             var existingGfx = fxKey.GetValue(pkeyGfx) as string;
                             if (!string.IsNullOrEmpty(existingGfx) && !string.Equals(existingGfx, clsidEfx, StringComparison.OrdinalIgnoreCase))
@@ -596,7 +629,7 @@ public static class InstallerEngine
                                 fxKey.SetValue(pkeyCompositeEfx, new string[] { clsidEfx }, RegistryValueKind.MultiString);
                             }
 
-                            // 4. Configure Processing Modes for SFX and EFX
+                            // 4. Configure Processing Modes for SFX, MFX, and EFX
                             var existingSfxModes = fxKey.GetValue(pkeySfxModes) as string[];
                             if (existingSfxModes != null && existingSfxModes.Length > 0)
                             {
@@ -606,6 +639,17 @@ public static class InstallerEngine
                             else
                             {
                                 fxKey.SetValue(pkeySfxModes, targetModes, RegistryValueKind.MultiString);
+                            }
+
+                            var existingMfxModes = fxKey.GetValue(pkeyMfxModes) as string[];
+                            if (existingMfxModes != null && existingMfxModes.Length > 0)
+                            {
+                                var mergedMfxModes = existingMfxModes.Union(targetModes, StringComparer.OrdinalIgnoreCase).ToArray();
+                                fxKey.SetValue(pkeyMfxModes, mergedMfxModes, RegistryValueKind.MultiString);
+                            }
+                            else
+                            {
+                                fxKey.SetValue(pkeyMfxModes, targetModes, RegistryValueKind.MultiString);
                             }
 
                             var existingEfxModes = fxKey.GetValue(pkeyEfxModes) as string[];

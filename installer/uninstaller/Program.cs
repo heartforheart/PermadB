@@ -154,7 +154,10 @@ static class Program
                                 const string pkeyLfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},1";
                                 const string pkeyGfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},2";
                                 const string pkeySfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},5";
+                                const string pkeyMfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},6";
                                 const string pkeyCompositeSfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},13";
+                                const string pkeyCompositeMfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},14";
+                                const string pkeyMfxModes = "{d3993a3f-99c2-4402-b5ec-a92a0367664b},6";
                                 const string pkeyEfxModes = "{d3993a3f-99c2-4402-b5ec-a92a0367664b},7";
 
                                 // 0. Restore DTS SFX if backed up
@@ -317,6 +320,58 @@ static class Program
                                 {
                                     fxKey.DeleteValue(pkeySfxModes, false);
                                     fxKey.DeleteValue("PermadB_Created_SFXModes", false);
+                                }
+
+                                // 4b. Restore MFX (Pre-Mix Mode Effect)
+                                var currentMfx = fxKey.GetValue(pkeyMfx) as string;
+                                if (string.Equals(currentMfx, clsidSfx, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    var backupMfxVal = fxKey.GetValue("PermadB_Backup_MFX") as string;
+                                    if (!string.IsNullOrEmpty(backupMfxVal))
+                                    {
+                                        fxKey.SetValue(pkeyMfx, backupMfxVal, RegistryValueKind.String);
+                                        fxKey.DeleteValue("PermadB_Backup_MFX", false);
+                                    }
+                                    else
+                                    {
+                                        fxKey.DeleteValue(pkeyMfx, false);
+                                    }
+                                }
+
+                                var currentCompMfx = fxKey.GetValue(pkeyCompositeMfx) as string[];
+                                if (currentCompMfx != null && currentCompMfx.Any(s => string.Equals(s, clsidSfx, StringComparison.OrdinalIgnoreCase)))
+                                {
+                                    var backupCompMfxVal = fxKey.GetValue("PermadB_Backup_CompositeMFX") as string[];
+                                    if (backupCompMfxVal != null && backupCompMfxVal.Length > 0)
+                                    {
+                                        fxKey.SetValue(pkeyCompositeMfx, backupCompMfxVal, RegistryValueKind.MultiString);
+                                        fxKey.DeleteValue("PermadB_Backup_CompositeMFX", false);
+                                    }
+                                    else
+                                    {
+                                        var remMfx = currentCompMfx.Where(s => !string.Equals(s, clsidSfx, StringComparison.OrdinalIgnoreCase)).ToArray();
+                                        if (remMfx.Length > 0)
+                                        {
+                                            fxKey.SetValue(pkeyCompositeMfx, remMfx, RegistryValueKind.MultiString);
+                                        }
+                                        else
+                                        {
+                                            fxKey.DeleteValue(pkeyCompositeMfx, false);
+                                        }
+                                    }
+                                }
+                                fxKey.DeleteValue("PermadB_Created_CompositeMFX", false);
+
+                                var backupMfxModes = fxKey.GetValue("PermadB_Backup_MFXModes") as string[];
+                                if (backupMfxModes != null && backupMfxModes.Length > 0)
+                                {
+                                    fxKey.SetValue(pkeyMfxModes, backupMfxModes, RegistryValueKind.MultiString);
+                                    fxKey.DeleteValue("PermadB_Backup_MFXModes", false);
+                                }
+                                else if (fxKey.GetValue("PermadB_Created_MFXModes") != null)
+                                {
+                                    fxKey.DeleteValue(pkeyMfxModes, false);
+                                    fxKey.DeleteValue("PermadB_Created_MFXModes", false);
                                 }
 
                                 fxKey.DeleteValue("PermadB_Installed_DeviceId", false);
