@@ -57,6 +57,14 @@ public struct PermadBApoTelemetry
     public float MasterSafetyCeilingLinear; // Upper safety cap for EFX brickwall
     public uint SfxActiveCount;         // Number of active SFX instances
 
+    // Diagnostic lifecycle counters
+    public uint EfxProcessCount;        // Incremented on every EFX APOProcess
+    public uint SfxInitCount;           // Incremented on every SFX Initialize
+    public uint SfxLockCount;           // Incremented on every SFX LockForProcess
+    public uint SfxProcessCount;        // Incremented on every SFX APOProcess
+    public uint LastSfxChannels;        // Channel count of last SFX stream locked
+    public uint DiagnosticPadding;      // Alignment padding to 8 bytes
+
     public const int SfxSlotCount = 16;
     public PermadBSfxSlot Slot0;
     public PermadBSfxSlot Slot1;
@@ -168,8 +176,8 @@ public class AudioEngine : IMMNotificationClient, IDisposable
     private MMDevice? _activeDevice;
     private AudioEndpointVolumeNotificationDelegate? _volumeDelegate;
 
-    // Real-Time APO Telemetry reader (reads C:\Users\Public\permadb_apo_telemetry.dat written by audiodg.exe)
-    private const string ApoTelemetryPath = @"C:\Users\Public\permadb_apo_telemetry.dat";
+    // Real-Time APO Telemetry reader (reads C:\Users\Public\permadb_apo_telemetry_v3.dat written by audiodg.exe)
+    private const string ApoTelemetryPath = @"C:\Users\Public\permadb_apo_telemetry_v3.dat";
     private FileStream? _telemetryFs;
     private MemoryMappedFile? _telemetryMmf;
     private MemoryMappedViewAccessor? _telemetryAcc;
@@ -379,15 +387,27 @@ public class AudioEngine : IMMNotificationClient, IDisposable
         ApplyPreset(_config.Settings.ActivePreset);
     }
 
+    public static string NormalizeProcessName(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return string.Empty;
+        var s = name.Trim();
+        if (s.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+        {
+            s = s.Substring(0, s.Length - 4);
+        }
+        return s.ToLowerInvariant();
+    }
+
     public void SetAppProtection(string processName, bool isProtected)
     {
-        if (string.IsNullOrWhiteSpace(processName)) return;
-        _config.Settings.AppProtectionRules[processName] = isProtected;
+        var norm = NormalizeProcessName(processName);
+        if (string.IsNullOrWhiteSpace(norm)) return;
+        _config.Settings.AppProtectionRules[norm] = isProtected;
         _config.Save();
         _lastProtectedAudioTime = DateTime.MinValue;
         _lastBypassedAudioTime = DateTime.MinValue;
         _lastSessionScan = DateTime.MinValue; // Force immediate re-scan!
-        AppLogger.Log($"[USER_ACTION] SetAppProtection: '{processName}' -> {(isProtected ? "LIMITED [PROTECTED]" : "BYPASSED [BLAST]")}");
+        AppLogger.Log($"[USER_ACTION] SetAppProtection: '{processName}' (norm: '{norm}') -> {(isProtected ? "LIMITED [PROTECTED]" : "BYPASSED [BLAST]")}");
         PostToAudioThread(() =>
         {
             _virtualBridge.UpdateCeiling(GetActivePresetLinearCeiling());
@@ -435,18 +455,19 @@ public class AudioEngine : IMMNotificationClient, IDisposable
 
     public bool IsAppProtected(string processName)
     {
-        if (string.IsNullOrWhiteSpace(processName)) return false;
-        if (_config.Settings.AppProtectionRules.TryGetValue(processName, out bool val))
+        var norm = NormalizeProcessName(processName);
+        if (string.IsNullOrWhiteSpace(norm)) return false;
+
+        foreach (var kvp in _config.Settings.AppProtectionRules)
         {
-            return val;
+            if (NormalizeProcessName(kvp.Key) == norm)
+            {
+                return kvp.Value;
+            }
         }
-        // Voice communication apps (Discord, Teams, Slack) default to Bypassed (false).
-        // General applications (browsers, music, games) default to Limited (true) for ear protection.
-        if (CommunicationApps.Contains(processName))
-        {
-            return false;
-        }
-        return true;
+        // In App-Specific Mode, ALL apps default to Bypassed (false).
+        // No app starts limited unless explicitly toggled to Limited (true) by the user.
+        return false;
     }
 
     public List<AppSessionInfo> GetDiscoverableAudioApps()
@@ -821,6 +842,8 @@ public class AudioEngine : IMMNotificationClient, IDisposable
         const string clsidEfx = "{968ff234-1895-49f1-8b97-9d9075eb25b6}";
         const string clsidSfx = "{b41e8c71-2947-4e3a-965a-06385d8204d1}";
 
+        const string pkeyLfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},1";
+        const string pkeyGfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},2";
         const string pkeySfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},5";
         const string pkeyEfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},7";
         const string pkeyCompositeSfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},13";
@@ -859,6 +882,13 @@ public class AudioEngine : IMMNotificationClient, IDisposable
             {
                 using (key)
                 {
+                    // 0. Configure Legacy LFX (Stream / Local Effect APO)
+                    var lfx = key.GetValue(pkeyLfx) as string;
+                    if (!string.Equals(lfx, clsidSfx, StringComparison.OrdinalIgnoreCase))
+                    {
+                        key.SetValue(pkeyLfx, clsidSfx, RegistryValueKind.String);
+                    }
+
                     // 1. Configure SFX (Pre-Mix Stream Effect APO)
                     var sfx = key.GetValue(pkeySfx) as string;
                     if (!string.Equals(sfx, clsidSfx, StringComparison.OrdinalIgnoreCase))
@@ -898,7 +928,14 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                         key.SetValue(pkeySfxModes, sfxModes.Union(targetModes, StringComparer.OrdinalIgnoreCase).ToArray(), RegistryValueKind.MultiString);
                     }
 
-                    // 2. Configure EFX (Post-Mix Master Limiter APO)
+                    // 2. Configure Legacy GFX (Endpoint / Global Effect APO)
+                    var gfx = key.GetValue(pkeyGfx) as string;
+                    if (!string.Equals(gfx, clsidEfx, StringComparison.OrdinalIgnoreCase))
+                    {
+                        key.SetValue(pkeyGfx, clsidEfx, RegistryValueKind.String);
+                    }
+
+                    // 3. Configure EFX (Post-Mix Master Limiter APO)
                     var efx = key.GetValue(pkeyEfx) as string;
                     if (!string.Equals(efx, clsidEfx, StringComparison.OrdinalIgnoreCase))
                     {
@@ -964,14 +1001,47 @@ public class AudioEngine : IMMNotificationClient, IDisposable
 
             if (_config.Settings.AppFilteringEnabled && isEnabled)
             {
-                // In App-Specific Limiting mode:
-                // 1. Target limited voice/game apps (Discord) route into VoiceMeeter Input -> VirtualStreamBridge,
-                //    where they are clamped strictly to the calibrated safe preset ceiling.
-                // 2. The Master APO on the physical output device runs in transparent peak-limiter mode (-1.0 dBFS)
-                //    so that bypassed apps (Brave, Spotify, games) blast at 100% full volume with ZERO ducking!
-                linear = 0.8912509f;
-                dbfs = -1.0f;
                 _virtualBridge.UpdateCeiling(GetActivePresetLinearCeiling());
+
+                // Smart Master EFX Coordination:
+                // Inspect current active audio streams and SFX instance count
+                var activeAudio = _cachedAppSessions.Where(s => s.PeakValue > 0.001f).ToList();
+                bool hasLimitedAudio = activeAudio.Any(s => IsAppProtected(s.ProcessName));
+                bool hasBypassedAudio = activeAudio.Any(s => !IsAppProtected(s.ProcessName));
+
+                // Read real-time sfxActiveCount from APO telemetry
+                uint sfxCount = 0;
+                if (_telemetryAcc != null)
+                {
+                    try
+                    {
+                        int offsetSfxCount = (int)Marshal.OffsetOf<PermadBApoTelemetry>(nameof(PermadBApoTelemetry.SfxActiveCount));
+                        sfxCount = _telemetryAcc.ReadUInt32(offsetSfxCount);
+                    }
+                    catch { }
+                }
+
+                // 1. If a limited app (e.g. Discord) is playing alone OR SFX instances == 0,
+                //    clamp Master EFX to the safe ceiling so the user's ears are 100% protected!
+                // 2. If bypassed audio (e.g. Brave, Spotify) is playing alongside active SFX instances,
+                //    relax Master EFX to -1.0 dBFS so bypassed audio is unattenuated while SFX limits the stream.
+                // 3. If only bypassed audio is playing, relax to -1.0 dBFS.
+                // 4. If only limited audio is playing, clamp to safe ceiling.
+                if (hasLimitedAudio && (!hasBypassedAudio || sfxCount == 0))
+                {
+                    linear = GetActivePresetLinearCeiling();
+                    dbfs = 20.0f * (float)Math.Log10(linear);
+                }
+                else if (hasBypassedAudio && (sfxCount > 0 || !hasLimitedAudio))
+                {
+                    linear = 0.8912509f;
+                    dbfs = -1.0f;
+                }
+                else
+                {
+                    linear = hasLimitedAudio ? GetActivePresetLinearCeiling() : 0.8912509f;
+                    dbfs = 20.0f * (float)Math.Log10(linear);
+                }
             }
 
             int enabledInt = isEnabled ? 1 : 0;
@@ -1006,7 +1076,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                     int offsetMasterSafety = (int)Marshal.OffsetOf<PermadBApoTelemetry>(nameof(PermadBApoTelemetry.MasterSafetyCeilingLinear));
 
                     _telemetryAcc.Write(offsetMagic, (uint)0x5045524D); // "PERM"
-                    _telemetryAcc.Write(offsetVersion, (uint)3); // Version 3: Dual-Stage SFX + EFX
+                    _telemetryAcc.Write(offsetVersion, (uint)4); // Version 4: Dual-Stage SFX + EFX + Diagnostics
                     _telemetryAcc.Write(offsetLinear, linear);
                     _telemetryAcc.Write(offsetDbfs, dbfs);
                     _telemetryAcc.Write(offsetEnabled, (uint)enabledInt);
@@ -1063,25 +1133,31 @@ public class AudioEngine : IMMNotificationClient, IDisposable
             int offsetBypass = (int)Marshal.OffsetOf<PermadBSfxSlot>(nameof(PermadBSfxSlot.Bypass));
             int offsetMatchedPid = (int)Marshal.OffsetOf<PermadBSfxSlot>(nameof(PermadBSfxSlot.MatchedProcessId));
 
-            // 2. 1-Tick Fast-Path Correlation: If exactly 1 unmatched active slot has audio and exactly 1 active WASAPI session has audio, match immediately!
+            // 2. 1-Tick Fast-Path Correlation: If all active audio sessions belong to one application, bind ALL active slots producing audio to that PID on Tick 1!
             var unmatchedActiveSlots = new List<(int Index, int Offset, PermadBSfxSlot Slot)>();
             for (int i = 0; i < 16; i++)
             {
                 int sOff = slot0Offset + (i * slotSize);
                 _telemetryAcc.Read(sOff, out PermadBSfxSlot s);
-                if (s.Active != 0 && s.MatchedProcessId == 0 && (s.InputPeak > 0.0005f || s.OutputPeak > 0.0005f))
+                if (s.Active != 0 && (s.InputPeak > 0.0005f || s.OutputPeak > 0.0005f))
                 {
                     unmatchedActiveSlots.Add((i, sOff, s));
                 }
             }
 
             var sessionsWithAudio = activeSessions.Where(s => s.ProcessId > 0 && s.PeakValue > 0.0005f).ToList();
+            var distinctActiveAppNames = sessionsWithAudio.Select(s => NormalizeProcessName(s.ProcessName)).Distinct().ToList();
 
-            if (unmatchedActiveSlots.Count == 1 && sessionsWithAudio.Count == 1)
+            if (distinctActiveAppNames.Count == 1 && unmatchedActiveSlots.Count > 0)
             {
-                var target = unmatchedActiveSlots[0];
                 uint matchedPid = (uint)sessionsWithAudio[0].ProcessId;
-                _telemetryAcc.Write(target.Offset + offsetMatchedPid, matchedPid);
+                foreach (var slotItem in unmatchedActiveSlots)
+                {
+                    if (slotItem.Slot.MatchedProcessId == 0)
+                    {
+                        _telemetryAcc.Write(slotItem.Offset + offsetMatchedPid, matchedPid);
+                    }
+                }
             }
 
             // 3. Correlate and sync each SFX slot
@@ -1176,22 +1252,31 @@ public class AudioEngine : IMMNotificationClient, IDisposable
 
                         if (isProtected)
                         {
-                            // Limited app (Brave, YouTube, Spotify): clamped strictly to safe preset ceiling
+                            // Limited app (explicitly toggled by user in UI): clamped strictly to safe preset ceiling
                             streamCeiling = safeLinear;
                             streamBypass = 0;
                         }
                         else
                         {
-                            // Bypassed app (Discord, TeamSpeak, voice): un-limited in SFX (capped only by EFX safety brickwall)
+                            // Bypassed app (default for all apps unless toggled): un-limited in SFX
                             streamCeiling = 0.8912509f;
                             streamBypass = 1;
                         }
                     }
-                    else if (slot.AudioProcessingMode == 1) // Communications mode unmatched
+                    else
                     {
-                        bool isCommProtected = IsAppProtected("Discord");
-                        if (!isCommProtected)
+                        // Unmatched slot with App-Specific Mode ON:
+                        // Check if ANY active session is currently Limited
+                        bool anyLimitedActive = sessionsWithAudio.Any(s => IsAppProtected(s.ProcessName));
+                        if (anyLimitedActive)
                         {
+                            // Protect user's ears in case this unmatched slot is the Limited app!
+                            streamCeiling = safeLinear;
+                            streamBypass = 0;
+                        }
+                        else
+                        {
+                            // All active sessions are Bypassed, so unmatched slots can be bypassed
                             streamCeiling = 0.8912509f;
                             streamBypass = 1;
                         }
@@ -1526,7 +1611,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                         float apoDbfs = _lastSentCeilingLinear > 0.0001f ? 20.0f * (float)Math.Log10(_lastSentCeilingLinear) : -96.0f;
                         string bridgeStatus = _virtualBridge.IsActive ? $"ACTIVE(GR={_virtualBridge.CurrentGainReductionDb:F1}dB,act={_virtualBridge.LimiterActivations})" : "OFF";
                         uint sfxCount = hasApoTelemetry ? telem.SfxActiveCount : 0;
-                        AppLogger.Log($"[HEARTBEAT] Mode={(_config.Settings.AppFilteringEnabled ? "AppSpecific" : "Master")}, Preset={_config.Settings.ActivePreset}({profile.SafeCeilingPercent:F0}%), SFX_Instances={sfxCount}, Bridge={bridgeStatus}, APO={_lastSentCeilingLinear:F4}({apoDbfs:F1}dBFS), MtrPeak={meterPeak:F2}, MtrVol={volScalar:P0}, Sessions=[{string.Join(", ", summaries)}]");
+                        AppLogger.Log($"[HEARTBEAT] Mode={(_config.Settings.AppFilteringEnabled ? "AppSpecific" : "Master")}, Preset={_config.Settings.ActivePreset}({profile.SafeCeilingPercent:F0}%), SFX_Instances={sfxCount}, EfxProc={telem.EfxProcessCount}, SfxInit={telem.SfxInitCount}, SfxLock={telem.SfxLockCount}, SfxProc={telem.SfxProcessCount}, SfxCh={telem.LastSfxChannels}, Bridge={bridgeStatus}, APO={_lastSentCeilingLinear:F4}({apoDbfs:F1}dBFS), MtrPeak={meterPeak:F2}, MtrVol={volScalar:P0}, Sessions=[{string.Join(", ", summaries)}]");
                     }
                 }
                 catch { }

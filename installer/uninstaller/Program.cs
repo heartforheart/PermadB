@@ -151,6 +151,8 @@ static class Program
                         {
                             using (fxKey)
                             {
+                                const string pkeyLfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},1";
+                                const string pkeyGfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},2";
                                 const string pkeySfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},5";
                                 const string pkeyCompositeSfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},13";
                                 const string pkeyEfxModes = "{d3993a3f-99c2-4402-b5ec-a92a0367664b},7";
@@ -174,6 +176,22 @@ static class Program
                                 {
                                     fxKey.SetValue(pkeyCompositeSfx, backupCompSfx, RegistryValueKind.MultiString);
                                     fxKey.DeleteValue("PermadB_Backup_CompositeSFX_DTS", false);
+                                }
+
+                                // 0b. Restore Legacy GFX (,2)
+                                var currentGfx = fxKey.GetValue(pkeyGfx) as string;
+                                if (string.Equals(currentGfx, clsid, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    var backupGfx = fxKey.GetValue("PermadB_Backup_GFX") as string;
+                                    if (!string.IsNullOrEmpty(backupGfx))
+                                    {
+                                        fxKey.SetValue(pkeyGfx, backupGfx, RegistryValueKind.String);
+                                        fxKey.DeleteValue("PermadB_Backup_GFX", false);
+                                    }
+                                    else
+                                    {
+                                        fxKey.DeleteValue(pkeyGfx, false);
+                                    }
                                 }
 
                                 // 1. Restore PKEY_FX_EndpointEffectClsid (,7)
@@ -233,6 +251,22 @@ static class Program
                                 // 4. Restore SFX (Pre-Mix Stream Effect)
                                 const string clsidSfx = "{b41e8c71-2947-4e3a-965a-06385d8204d1}";
                                 const string pkeySfxModes = "{d3993a3f-99c2-4402-b5ec-a92a0367664b},5";
+
+                                // 4a. Restore Legacy LFX (,1)
+                                var currentLfx = fxKey.GetValue(pkeyLfx) as string;
+                                if (string.Equals(currentLfx, clsidSfx, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    var backupLfxVal = fxKey.GetValue("PermadB_Backup_LFX") as string;
+                                    if (!string.IsNullOrEmpty(backupLfxVal))
+                                    {
+                                        fxKey.SetValue(pkeyLfx, backupLfxVal, RegistryValueKind.String);
+                                        fxKey.DeleteValue("PermadB_Backup_LFX", false);
+                                    }
+                                    else
+                                    {
+                                        fxKey.DeleteValue(pkeyLfx, false);
+                                    }
+                                }
 
                                 var currentSfx = fxKey.GetValue(pkeySfx) as string;
                                 if (string.Equals(currentSfx, clsidSfx, StringComparison.OrdinalIgnoreCase))

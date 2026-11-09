@@ -73,7 +73,7 @@ CPermadBLimiterAPO::~CPermadBLimiterAPO()
 void CPermadBLimiterAPO::InitTelemetry()
 {
     m_hFile = CreateFileW(
-        L"C:\\Users\\Public\\permadb_apo_telemetry.dat",
+        PERMADB_SHMEM_FILE,
         GENERIC_READ | GENERIC_WRITE,
         FILE_SHARE_READ | FILE_SHARE_WRITE,
         NULL,
@@ -95,7 +95,7 @@ void CPermadBLimiterAPO::InitTelemetry()
             PAGE_READWRITE,
             0,
             sizeof(PermadBApoTelemetry),
-            NULL
+            PERMADB_SHMEM_NAME
         );
 
         if (m_hMapFile != NULL)
@@ -294,6 +294,98 @@ STDMETHODIMP_(ULONG) CPermadBLimiterAPO::Release()
 }
 
 // IAudioProcessingObject
+STDMETHODIMP CPermadBLimiterAPO::GetRegistrationProperties(APO_REG_PROPERTIES** ppRegProps)
+{
+    if (!ppRegProps) return E_POINTER;
+    *ppRegProps = nullptr;
+
+    const size_t totalBytes = sizeof(sm_RegProperties);
+    APO_REG_PROPERTIES* pCopy = static_cast<APO_REG_PROPERTIES*>(CoTaskMemAlloc(totalBytes));
+    if (!pCopy) return E_OUTOFMEMORY;
+
+    memcpy(pCopy, &sm_RegProperties, totalBytes);
+    *ppRegProps = pCopy;
+    return S_OK;
+}
+
+static bool IsSupportedAudioFormat(const WAVEFORMATEX* pWfx)
+{
+    if (!pWfx) return false;
+    bool isFloat = false;
+    if (pWfx->wFormatTag == WAVE_FORMAT_IEEE_FLOAT)
+    {
+        isFloat = true;
+    }
+    else if (pWfx->wFormatTag == WAVE_FORMAT_EXTENSIBLE && pWfx->cbSize >= (sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX)))
+    {
+        const WAVEFORMATEXTENSIBLE* pExt = reinterpret_cast<const WAVEFORMATEXTENSIBLE*>(pWfx);
+        if (IsEqualGUID(pExt->SubFormat, KSDATAFORMAT_SUBTYPE_IEEE_FLOAT))
+        {
+            isFloat = true;
+        }
+    }
+    if (!isFloat) return false;
+    if (pWfx->nChannels < 1 || pWfx->nChannels > 16) return false;
+    if (pWfx->wBitsPerSample != 32) return false;
+    if (pWfx->nSamplesPerSec < 8000 || pWfx->nSamplesPerSec > 384000) return false;
+    return true;
+}
+
+static bool AreAudioFormatsCompatible(const WAVEFORMATEX* p1, const WAVEFORMATEX* p2)
+{
+    if (!p1 || !p2) return false;
+    if (p1->nChannels != p2->nChannels) return false;
+    if (p1->nSamplesPerSec != p2->nSamplesPerSec) return false;
+    if (p1->wBitsPerSample != p2->wBitsPerSample) return false;
+    return true;
+}
+
+STDMETHODIMP CPermadBLimiterAPO::IsInputFormatSupported(
+    IAudioMediaType* pOutputFormat,
+    IAudioMediaType* pRequestedInputFormat,
+    IAudioMediaType** ppSupportedInputFormat)
+{
+    if (!pRequestedInputFormat) return E_POINTER;
+    if (ppSupportedInputFormat) *ppSupportedInputFormat = nullptr;
+
+    const WAVEFORMATEX* pInWfx = pRequestedInputFormat->GetAudioFormat();
+    if (!IsSupportedAudioFormat(pInWfx)) return APOERR_FORMAT_NOT_SUPPORTED;
+
+    if (pOutputFormat)
+    {
+        const WAVEFORMATEX* pOutWfx = pOutputFormat->GetAudioFormat();
+        if (pOutWfx && !AreAudioFormatsCompatible(pInWfx, pOutWfx))
+        {
+            return APOERR_FORMAT_NOT_SUPPORTED;
+        }
+    }
+
+    return S_OK;
+}
+
+STDMETHODIMP CPermadBLimiterAPO::IsOutputFormatSupported(
+    IAudioMediaType* pInputFormat,
+    IAudioMediaType* pRequestedOutputFormat,
+    IAudioMediaType** ppSupportedOutputFormat)
+{
+    if (!pRequestedOutputFormat) return E_POINTER;
+    if (ppSupportedOutputFormat) *ppSupportedOutputFormat = nullptr;
+
+    const WAVEFORMATEX* pOutWfx = pRequestedOutputFormat->GetAudioFormat();
+    if (!IsSupportedAudioFormat(pOutWfx)) return APOERR_FORMAT_NOT_SUPPORTED;
+
+    if (pInputFormat)
+    {
+        const WAVEFORMATEX* pInWfx = pInputFormat->GetAudioFormat();
+        if (pInWfx && !AreAudioFormatsCompatible(pInWfx, pOutWfx))
+        {
+            return APOERR_FORMAT_NOT_SUPPORTED;
+        }
+    }
+
+    return S_OK;
+}
+
 STDMETHODIMP CPermadBLimiterAPO::Initialize(UINT32 cbDataSize, BYTE* pbyData)
 {
     LogApo(L"Initialize called (cbDataSize=%u)", cbDataSize);
@@ -330,6 +422,9 @@ STDMETHODIMP CPermadBLimiterAPO::LockForProcess(
     {
         uint32_t sampleRate = static_cast<uint32_t>(GetFramesPerSecond());
         uint32_t channels = static_cast<uint32_t>(GetSamplesPerFrame());
+        if (channels < 1) channels = 1;
+        if (channels > 16) channels = 16;
+        if (sampleRate < 8000) sampleRate = 48000;
         m_limiter.Init(sampleRate, channels);
     }
     LogApo(L"LockForProcess result: 0x%08X (rate=%.0f, channels=%u, m_bIsLocked=%d, lookaheadFrames=%u)",
@@ -360,8 +455,15 @@ STDMETHODIMP_(void) CPermadBLimiterAPO::APOProcess(
     if (!pIn || !pOut || !pIn->pBuffer || !pOut->pBuffer)
         return;
 
+    if (m_pTelemetry)
+    {
+        InterlockedIncrement(reinterpret_cast<volatile LONG*>(&m_pTelemetry->efxProcessCount));
+    }
+
     UINT32 u32Frames = pIn->u32ValidFrameCount;
     UINT32 u32Channels = GetSamplesPerFrame();
+    if (u32Channels < 1) u32Channels = 1;
+    if (u32Channels > 16) u32Channels = 16;
 
     FLOAT32* pf32In = reinterpret_cast<FLOAT32*>(pIn->pBuffer);
     FLOAT32* pf32Out = reinterpret_cast<FLOAT32*>(pOut->pBuffer);
@@ -591,7 +693,7 @@ CPermadBSfxApo::~CPermadBSfxApo()
 void CPermadBSfxApo::InitTelemetry()
 {
     m_hFile = CreateFileW(
-        L"C:\\Users\\Public\\permadb_apo_telemetry.dat",
+        PERMADB_SHMEM_FILE,
         GENERIC_READ | GENERIC_WRITE,
         FILE_SHARE_READ | FILE_SHARE_WRITE,
         NULL,
@@ -613,7 +715,7 @@ void CPermadBSfxApo::InitTelemetry()
             PAGE_READWRITE,
             0,
             sizeof(PermadBApoTelemetry),
-            NULL
+            PERMADB_SHMEM_NAME
         );
 
         if (m_hMapFile != NULL)
@@ -667,8 +769,8 @@ int CPermadBSfxApo::ClaimSlot(UINT32 mode)
                 safeCeiling = m_pTelemetry->targetCeilingLinear;
             }
             m_pTelemetry->slots[i].targetCeilingLinear = safeCeiling;
-            // Communication streams (Discord/Teams/Slack) default immediately to bypassed (100% nominal volume, zero limiting)
-            m_pTelemetry->slots[i].bypass = (mode == PermadBMode_Communications) ? 1 : 0;
+            // Every stream begins in active limiting mode until C# correlation sets bypass per user rules
+            m_pTelemetry->slots[i].bypass = 0;
             m_pTelemetry->slots[i].matchedProcessId = 0;
 
             InterlockedIncrement(reinterpret_cast<volatile LONG*>(&m_pTelemetry->sfxActiveCount));
@@ -768,6 +870,66 @@ STDMETHODIMP_(ULONG) CPermadBSfxApo::Release()
 }
 
 // IAudioProcessingObject (SFX)
+STDMETHODIMP CPermadBSfxApo::GetRegistrationProperties(APO_REG_PROPERTIES** ppRegProps)
+{
+    if (!ppRegProps) return E_POINTER;
+    *ppRegProps = nullptr;
+
+    const size_t totalBytes = sizeof(sm_RegPropertiesSfx);
+    APO_REG_PROPERTIES* pCopy = static_cast<APO_REG_PROPERTIES*>(CoTaskMemAlloc(totalBytes));
+    if (!pCopy) return E_OUTOFMEMORY;
+
+    memcpy(pCopy, &sm_RegPropertiesSfx, totalBytes);
+    *ppRegProps = pCopy;
+    return S_OK;
+}
+
+STDMETHODIMP CPermadBSfxApo::IsInputFormatSupported(
+    IAudioMediaType* pOutputFormat,
+    IAudioMediaType* pRequestedInputFormat,
+    IAudioMediaType** ppSupportedInputFormat)
+{
+    if (!pRequestedInputFormat) return E_POINTER;
+    if (ppSupportedInputFormat) *ppSupportedInputFormat = nullptr;
+
+    const WAVEFORMATEX* pInWfx = pRequestedInputFormat->GetAudioFormat();
+    if (!IsSupportedAudioFormat(pInWfx)) return APOERR_FORMAT_NOT_SUPPORTED;
+
+    if (pOutputFormat)
+    {
+        const WAVEFORMATEX* pOutWfx = pOutputFormat->GetAudioFormat();
+        if (pOutWfx && !AreAudioFormatsCompatible(pInWfx, pOutWfx))
+        {
+            return APOERR_FORMAT_NOT_SUPPORTED;
+        }
+    }
+
+    return S_OK;
+}
+
+STDMETHODIMP CPermadBSfxApo::IsOutputFormatSupported(
+    IAudioMediaType* pInputFormat,
+    IAudioMediaType* pRequestedOutputFormat,
+    IAudioMediaType** ppSupportedOutputFormat)
+{
+    if (!pRequestedOutputFormat) return E_POINTER;
+    if (ppSupportedOutputFormat) *ppSupportedOutputFormat = nullptr;
+
+    const WAVEFORMATEX* pOutWfx = pRequestedOutputFormat->GetAudioFormat();
+    if (!IsSupportedAudioFormat(pOutWfx)) return APOERR_FORMAT_NOT_SUPPORTED;
+
+    if (pInputFormat)
+    {
+        const WAVEFORMATEX* pInWfx = pInputFormat->GetAudioFormat();
+        if (pInWfx && !AreAudioFormatsCompatible(pInWfx, pOutWfx))
+        {
+            return APOERR_FORMAT_NOT_SUPPORTED;
+        }
+    }
+
+    return S_OK;
+}
+
 STDMETHODIMP CPermadBSfxApo::Initialize(UINT32 cbDataSize, BYTE* pbyData)
 {
     if (cbDataSize != 0 && pbyData == nullptr) return E_INVALIDARG;
@@ -807,6 +969,11 @@ STDMETHODIMP CPermadBSfxApo::Initialize(UINT32 cbDataSize, BYTE* pbyData)
         InitTelemetry();
     }
 
+    if (m_pTelemetry)
+    {
+        InterlockedIncrement(reinterpret_cast<volatile LONG*>(&m_pTelemetry->sfxInitCount));
+    }
+
     if (m_slotIndex < 0 && m_pTelemetry)
     {
         m_slotIndex = ClaimSlot(mode);
@@ -828,6 +995,11 @@ STDMETHODIMP CPermadBSfxApo::LockForProcess(
     UINT32 u32NumOutputConnections,
     APO_CONNECTION_DESCRIPTOR** ppOutputConnections)
 {
+    if (m_pTelemetry)
+    {
+        InterlockedIncrement(reinterpret_cast<volatile LONG*>(&m_pTelemetry->sfxLockCount));
+    }
+
     HRESULT hr = CBaseAudioProcessingObject::LockForProcess(
         u32NumInputConnections,
         ppInputConnections,
@@ -838,6 +1010,15 @@ STDMETHODIMP CPermadBSfxApo::LockForProcess(
     {
         uint32_t sampleRate = static_cast<uint32_t>(GetFramesPerSecond());
         uint32_t channels = static_cast<uint32_t>(GetSamplesPerFrame());
+        if (channels < 1) channels = 1;
+        if (channels > 16) channels = 16;
+        if (sampleRate < 8000) sampleRate = 48000;
+
+        if (m_pTelemetry)
+        {
+            m_pTelemetry->lastSfxChannels = channels;
+        }
+
         m_limiter.Init(sampleRate, channels);
 
         float safeCeiling = 0.1585f;
@@ -873,6 +1054,11 @@ STDMETHODIMP_(void) CPermadBSfxApo::APOProcess(
     if (!pIn || !pOut || !pIn->pBuffer || !pOut->pBuffer)
         return;
 
+    if (m_pTelemetry)
+    {
+        InterlockedIncrement(reinterpret_cast<volatile LONG*>(&m_pTelemetry->sfxProcessCount));
+    }
+
     // Lazy slot claiming if shared memory was created after Initialize
     if (m_slotIndex < 0)
     {
@@ -882,6 +1068,8 @@ STDMETHODIMP_(void) CPermadBSfxApo::APOProcess(
 
     UINT32 u32Frames = pIn->u32ValidFrameCount;
     UINT32 u32Channels = GetSamplesPerFrame();
+    if (u32Channels < 1) u32Channels = 1;
+    if (u32Channels > 16) u32Channels = 16;
     FLOAT32* pf32In = reinterpret_cast<FLOAT32*>(pIn->pBuffer);
     FLOAT32* pf32Out = reinterpret_cast<FLOAT32*>(pOut->pBuffer);
 

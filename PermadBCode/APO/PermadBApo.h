@@ -27,7 +27,8 @@ static const GUID PermadBEffectId =
     { 0x72da89f2, 0x2b62, 0x4f38, { 0x9c, 0xf1, 0xec, 0x9e, 0x4f, 0x20, 0x8c, 0x90 } };
 
 #define PERMADB_TELEMETRY_MAGIC 0x5045524D // "PERM"
-#define PERMADB_SHMEM_NAME L"Global\\PermadB_APO_Telemetry"
+#define PERMADB_SHMEM_NAME L"Global\\PermadB_APO_Telemetry_v3"
+#define PERMADB_SHMEM_FILE L"C:\\Users\\Public\\permadb_apo_telemetry_v3.dat"
 #define PERMADB_SFX_MAX_SLOTS 16
 
 enum PermadBAudioMode : UINT32
@@ -54,7 +55,7 @@ struct PermadBSfxSlot
 struct PermadBApoTelemetry
 {
     UINT32 magic;                         // "PERM" (0x5045524D)
-    UINT32 version;                       // 3 (Dual-Stage SFX + EFX)
+    UINT32 version;                       // 4 (v3 Dual-Stage + Diagnostics)
     UINT32 audiodgPid;                    // PID of audiodg.exe
     UINT32 sampleRate;                    // e.g. 48000
     UINT32 channelCount;                  // e.g. 2
@@ -78,12 +79,21 @@ struct PermadBApoTelemetry
     UINT32 commandSeq;                    // Incremented by App whenever command changes
     FLOAT32 masterSafetyCeilingLinear;    // Master safety cap for EFX brickwall (e.g. 0.8912f or safe ceiling)
     UINT32 sfxActiveCount;                // Number of active SFX instances
+
+    // Diagnostic lifecycle counters
+    UINT32 efxProcessCount;               // Incremented on every EFX APOProcess
+    UINT32 sfxInitCount;                  // Incremented on every SFX Initialize
+    UINT32 sfxLockCount;                  // Incremented on every SFX LockForProcess
+    UINT32 sfxProcessCount;               // Incremented on every SFX APOProcess
+    UINT32 lastSfxChannels;               // Channel count of last SFX stream locked
+    UINT32 diagnosticPadding;             // Alignment padding to 8 bytes
+
     PermadBSfxSlot slots[PERMADB_SFX_MAX_SLOTS]; // Fixed table of 16 SFX stream slots
 };
 #pragma pack(pop)
 
 static_assert(sizeof(PermadBSfxSlot) == 32, "PermadBSfxSlot must be exactly 32 bytes");
-static_assert(sizeof(PermadBApoTelemetry) == 624, "PermadBApoTelemetry must be exactly 624 bytes");
+static_assert(sizeof(PermadBApoTelemetry) == 648, "PermadBApoTelemetry must be exactly 648 bytes");
 
 class CPermadBLimiterAPO;
 
@@ -130,8 +140,11 @@ public:
     STDMETHOD_(ULONG, Release)() override;
 
     // IAudioProcessingObject
+    STDMETHOD(GetRegistrationProperties)(_Outptr_opt_ APO_REG_PROPERTIES** ppRegProps) override;
     STDMETHOD(Initialize)(UINT32 cbDataSize, BYTE* pbyData) override;
     STDMETHOD(Reset)() override;
+    STDMETHOD(IsInputFormatSupported)(_In_opt_ IAudioMediaType* pOutputFormat, _In_opt_ IAudioMediaType* pRequestedInputFormat, _Outptr_opt_ IAudioMediaType** ppSupportedInputFormat) override;
+    STDMETHOD(IsOutputFormatSupported)(_In_opt_ IAudioMediaType* pInputFormat, _In_opt_ IAudioMediaType* pRequestedOutputFormat, _Outptr_opt_ IAudioMediaType** ppSupportedOutputFormat) override;
 
     // IAudioProcessingObjectConfiguration
     STDMETHOD(LockForProcess)(
@@ -206,8 +219,11 @@ public:
     STDMETHOD_(ULONG, Release)() override;
 
     // IAudioProcessingObject
+    STDMETHOD(GetRegistrationProperties)(_Outptr_opt_ APO_REG_PROPERTIES** ppRegProps) override;
     STDMETHOD(Initialize)(UINT32 cbDataSize, BYTE* pbyData) override;
     STDMETHOD(Reset)() override;
+    STDMETHOD(IsInputFormatSupported)(_In_opt_ IAudioMediaType* pOutputFormat, _In_opt_ IAudioMediaType* pRequestedInputFormat, _Outptr_opt_ IAudioMediaType** ppSupportedInputFormat) override;
+    STDMETHOD(IsOutputFormatSupported)(_In_opt_ IAudioMediaType* pInputFormat, _In_opt_ IAudioMediaType* pRequestedOutputFormat, _Outptr_opt_ IAudioMediaType** ppSupportedOutputFormat) override;
 
     // IAudioProcessingObjectConfiguration
     STDMETHOD(LockForProcess)(

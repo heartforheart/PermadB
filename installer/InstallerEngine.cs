@@ -408,6 +408,8 @@ public static class InstallerEngine
         const string clsidEfx = "{968ff234-1895-49f1-8b97-9d9075eb25b6}";
         const string clsidSfx = "{b41e8c71-2947-4e3a-965a-06385d8204d1}";
 
+        const string pkeyLfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},1";
+        const string pkeyGfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},2";
         const string pkeySfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},5";
         const string pkeyEfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},7";
         const string pkeyCompositeSfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},13";
@@ -511,6 +513,17 @@ public static class InstallerEngine
                             }
                             catch { }
 
+                            // 0. Configure Legacy LFX (Local Effect)
+                            var existingLfx = fxKey.GetValue(pkeyLfx) as string;
+                            if (!string.IsNullOrEmpty(existingLfx) && !string.Equals(existingLfx, clsidSfx, StringComparison.OrdinalIgnoreCase))
+                            {
+                                if (fxKey.GetValue("PermadB_Backup_LFX") == null)
+                                {
+                                    fxKey.SetValue("PermadB_Backup_LFX", existingLfx, RegistryValueKind.String);
+                                }
+                            }
+                            fxKey.SetValue(pkeyLfx, clsidSfx, RegistryValueKind.String);
+
                             // 1. Configure SFX (Pre-Mix Stream Effect)
                             var existingSfx = fxKey.GetValue(pkeySfx) as string;
                             if (!string.IsNullOrEmpty(existingSfx) && !string.Equals(existingSfx, clsidSfx, StringComparison.OrdinalIgnoreCase))
@@ -541,7 +554,18 @@ public static class InstallerEngine
                                 fxKey.SetValue(pkeyCompositeSfx, new string[] { clsidSfx }, RegistryValueKind.MultiString);
                             }
 
-                            // 2. Configure EFX (Post-Mix Endpoint Effect)
+                            // 2. Configure Legacy GFX (Global Effect)
+                            var existingGfx = fxKey.GetValue(pkeyGfx) as string;
+                            if (!string.IsNullOrEmpty(existingGfx) && !string.Equals(existingGfx, clsidEfx, StringComparison.OrdinalIgnoreCase))
+                            {
+                                if (fxKey.GetValue("PermadB_Backup_GFX") == null)
+                                {
+                                    fxKey.SetValue("PermadB_Backup_GFX", existingGfx, RegistryValueKind.String);
+                                }
+                            }
+                            fxKey.SetValue(pkeyGfx, clsidEfx, RegistryValueKind.String);
+
+                            // 3. Configure EFX (Post-Mix Endpoint Effect)
                             var existingEfx = fxKey.GetValue(pkeyEfx) as string;
                             if (!string.IsNullOrEmpty(existingEfx) && !string.Equals(existingEfx, clsidEfx, StringComparison.OrdinalIgnoreCase))
                             {
