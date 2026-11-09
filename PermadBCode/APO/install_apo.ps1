@@ -58,27 +58,35 @@ if ($regSvr.ExitCode -ne 0) {
     Write-Error "[ERROR] regsvr32 failed with exit code $($regSvr.ExitCode)"
 }
 
-# Ensure AudioProcessingObjects registration has correct interface GUIDs
-$apoRegPath = "SOFTWARE\Classes\AudioEngine\AudioProcessingObjects\{968ff234-1895-49f1-8b97-9d9075eb25b6}"
-$apoKey = [Microsoft.Win32.Registry]::LocalMachine.CreateSubKey($apoRegPath, $true)
-try {
-    $apoKey.SetValue("FriendlyName", "PermadB Limiter APO", [Microsoft.Win32.RegistryValueKind]::String)
-    $apoKey.SetValue("Copyright", "PermadB", [Microsoft.Win32.RegistryValueKind]::String)
-    $apoKey.SetValue("MajorVersion", 1, [Microsoft.Win32.RegistryValueKind]::DWord)
-    $apoKey.SetValue("MinorVersion", 0, [Microsoft.Win32.RegistryValueKind]::DWord)
-    $apoKey.SetValue("Flags", 15, [Microsoft.Win32.RegistryValueKind]::DWord)
-    $apoKey.SetValue("MinInputConnections", 1, [Microsoft.Win32.RegistryValueKind]::DWord)
-    $apoKey.SetValue("MaxInputConnections", 1, [Microsoft.Win32.RegistryValueKind]::DWord)
-    $apoKey.SetValue("MinOutputConnections", 1, [Microsoft.Win32.RegistryValueKind]::DWord)
-    $apoKey.SetValue("MaxOutputConnections", 1, [Microsoft.Win32.RegistryValueKind]::DWord)
-    $apoKey.SetValue("MaxInstances", [int]0xFFFFFFFF, [Microsoft.Win32.RegistryValueKind]::DWord)
-    $apoKey.SetValue("NumAPOInterfaces", 1, [Microsoft.Win32.RegistryValueKind]::DWord)
-    $apoKey.SetValue("APOInterface0", "{FD7F2B29-24D0-4B5C-B177-592C39F9CA10}", [Microsoft.Win32.RegistryValueKind]::String) # IID_IAudioProcessingObject
-    try { $apoKey.DeleteValue("APOInterface1") } catch { }
-} finally {
-    $apoKey.Close()
+# Ensure AudioProcessingObjects registration has correct interface GUIDs (EFX & SFX)
+$efxClsid = "{968ff234-1895-49f1-8b97-9d9075eb25b6}"
+$sfxClsid = "{b41e8c71-2947-4e3a-965a-06385d8204d1}"
+
+foreach ($item in @(
+    @{ Clsid = $efxClsid; Name = "PermadB Master Limiter EFX APO" },
+    @{ Clsid = $sfxClsid; Name = "PermadB Stream Limiter SFX APO" }
+)) {
+    $apoRegPath = "SOFTWARE\Classes\AudioEngine\AudioProcessingObjects\$($item.Clsid)"
+    $apoKey = [Microsoft.Win32.Registry]::LocalMachine.CreateSubKey($apoRegPath, $true)
+    try {
+        $apoKey.SetValue("FriendlyName", $item.Name, [Microsoft.Win32.RegistryValueKind]::String)
+        $apoKey.SetValue("Copyright", "PermadB", [Microsoft.Win32.RegistryValueKind]::String)
+        $apoKey.SetValue("MajorVersion", 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+        $apoKey.SetValue("MinorVersion", 0, [Microsoft.Win32.RegistryValueKind]::DWord)
+        $apoKey.SetValue("Flags", 15, [Microsoft.Win32.RegistryValueKind]::DWord)
+        $apoKey.SetValue("MinInputConnections", 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+        $apoKey.SetValue("MaxInputConnections", 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+        $apoKey.SetValue("MinOutputConnections", 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+        $apoKey.SetValue("MaxOutputConnections", 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+        $apoKey.SetValue("MaxInstances", [int]0xFFFFFFFF, [Microsoft.Win32.RegistryValueKind]::DWord)
+        $apoKey.SetValue("NumAPOInterfaces", 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+        $apoKey.SetValue("APOInterface0", "{FD7F2B29-24D0-4B5C-B177-592C39F9CA10}", [Microsoft.Win32.RegistryValueKind]::String) # IID_IAudioProcessingObject
+        try { $apoKey.DeleteValue("APOInterface1") } catch { }
+    } finally {
+        $apoKey.Close()
+    }
 }
-Write-Host "      COM & AudioEngine registration complete." -ForegroundColor Green
+Write-Host "      COM & AudioEngine registration complete for EFX and SFX." -ForegroundColor Green
 
 # 4. Determine Target Audio Endpoint
 Write-Host "[3/5] Resolving playback endpoint..." -ForegroundColor Yellow
@@ -124,8 +132,12 @@ if (-not (Test-Path $fxPath)) {
     New-Item -Path $fxPath -Force | Out-Null
 }
 
-$clsid = "{968ff234-1895-49f1-8b97-9d9075eb25b6}"
+$efxClsid = "{968ff234-1895-49f1-8b97-9d9075eb25b6}"
+$sfxClsid = "{b41e8c71-2947-4e3a-965a-06385d8204d1}"
+
+$pkeySfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},5"
 $pkeyEfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},7"
+$pkeyCompositeSfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},13"
 $pkeyCompositeEfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},15"
 $pkeySfxModes = "{d3993a3f-99c2-4402-b5ec-a92a0367664b},5"
 $pkeyMfxModes = "{d3993a3f-99c2-4402-b5ec-a92a0367664b},6"
@@ -135,43 +147,75 @@ $pkeyEfxModes = "{d3993a3f-99c2-4402-b5ec-a92a0367664b},7"
 $regSubPath = "SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render\$TargetDeviceId\FxProperties"
 $key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($regSubPath, [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree, [System.Security.AccessControl.RegistryRights]::SetValue -bor [System.Security.AccessControl.RegistryRights]::QueryValues)
 try {
-    # 1. Preserve and configure PKEY_FX_EndpointEffectClsid (,7)
+    # 1. Configure SFX (Pre-Mix Stream Effect)
+    $existingSfx = $key.GetValue($pkeySfx)
+    if ($existingSfx -and $existingSfx -ne $sfxClsid) {
+        if (-not $key.GetValue("PermadB_Backup_SFX")) {
+            $key.SetValue("PermadB_Backup_SFX", $existingSfx, [Microsoft.Win32.RegistryValueKind]::String)
+        }
+    }
+    $key.SetValue($pkeySfx, $sfxClsid, [Microsoft.Win32.RegistryValueKind]::String)
+
+    # 2. Configure CompositeSFX
+    $existingCompSfx = $key.GetValue($pkeyCompositeSfx)
+    if ($existingCompSfx -and $existingCompSfx.Length -gt 0) {
+        if (-not ($existingCompSfx -contains $sfxClsid)) {
+            if (-not $key.GetValue("PermadB_Backup_CompositeSFX")) {
+                $key.SetValue("PermadB_Backup_CompositeSFX", [string[]]$existingCompSfx, [Microsoft.Win32.RegistryValueKind]::MultiString)
+            }
+            $newCompSfx = [string[]]($existingCompSfx + @($sfxClsid))
+            $key.SetValue($pkeyCompositeSfx, $newCompSfx, [Microsoft.Win32.RegistryValueKind]::MultiString)
+        }
+    } else {
+        $key.SetValue("PermadB_Created_CompositeSFX", 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+        $key.SetValue($pkeyCompositeSfx, [string[]]@($sfxClsid), [Microsoft.Win32.RegistryValueKind]::MultiString)
+    }
+
+    # 3. Configure EFX (Post-Mix Endpoint Effect)
     $existingEfx = $key.GetValue($pkeyEfx)
-    if ($existingEfx -and $existingEfx -ne $clsid) {
+    if ($existingEfx -and $existingEfx -ne $efxClsid) {
         if (-not $key.GetValue("PermadB_Backup_EFX")) {
             $key.SetValue("PermadB_Backup_EFX", $existingEfx, [Microsoft.Win32.RegistryValueKind]::String)
         }
     }
-    $key.SetValue($pkeyEfx, $clsid, [Microsoft.Win32.RegistryValueKind]::String)
+    $key.SetValue($pkeyEfx, $efxClsid, [Microsoft.Win32.RegistryValueKind]::String)
 
-    # 2. Preserve and configure PKEY_CompositeFX_EndpointEffectClsid (,15)
+    # 4. Configure CompositeEFX
     $existingComp = $key.GetValue($pkeyCompositeEfx)
     if ($existingComp -and $existingComp.Length -gt 0) {
-        if (-not ($existingComp -contains $clsid)) {
+        if (-not ($existingComp -contains $efxClsid)) {
             if (-not $key.GetValue("PermadB_Backup_CompositeEFX")) {
                 $key.SetValue("PermadB_Backup_CompositeEFX", [string[]]$existingComp, [Microsoft.Win32.RegistryValueKind]::MultiString)
             }
-            $newComp = [string[]]($existingComp + @($clsid))
+            $newComp = [string[]]($existingComp + @($efxClsid))
             $key.SetValue($pkeyCompositeEfx, $newComp, [Microsoft.Win32.RegistryValueKind]::MultiString)
         }
     } else {
         $key.SetValue("PermadB_Created_CompositeEFX", 1, [Microsoft.Win32.RegistryValueKind]::DWord)
-        $key.SetValue($pkeyCompositeEfx, [string[]]@($clsid), [Microsoft.Win32.RegistryValueKind]::MultiString)
+        $key.SetValue($pkeyCompositeEfx, [string[]]@($efxClsid), [Microsoft.Win32.RegistryValueKind]::MultiString)
     }
 
-    # 3. Preserve and configure PKEY_EFX_ProcessingModes_Supported_For_Streaming (,7)
-    $existingEfxModes = $key.GetValue($pkeyEfxModes)
-    $sfxModes = $key.GetValue($pkeySfxModes)
-    $targetModes = if ($sfxModes -and $sfxModes.Length -gt 0) { [string[]]$sfxModes } else { [string[]]@("{C18E2F7E-933D-4965-B7D1-1EEF228D2AF3}") }
+    # 5. Configure Streaming Modes for SFX and EFX
+    $targetModes = [string[]]@(
+        "{C18E2F7E-933D-4965-B7D1-1EEF228D2AF3}", # Default
+        "{98951333-B9CD-48B1-A0A3-FF40682D73F7}", # Communications
+        "{FC1CF0A4-3860-4592-8232-A567847BE2D1}", # Speech
+        "{47800040-4533-461B-9B4C-9E9D77B11057}"  # Media
+    )
 
-    if ($existingEfxModes -and $existingEfxModes.Length -gt 0) {
-        if (-not $key.GetValue("PermadB_Backup_EFXModes")) {
-            $key.SetValue("PermadB_Backup_EFXModes", [string[]]$existingEfxModes, [Microsoft.Win32.RegistryValueKind]::MultiString)
-        }
-        $mergedModes = [string[]]($existingEfxModes + $targetModes | Select-Object -Unique)
-        $key.SetValue($pkeyEfxModes, $mergedModes, [Microsoft.Win32.RegistryValueKind]::MultiString)
+    $existingSfxModes = $key.GetValue($pkeySfxModes)
+    if ($existingSfxModes -and $existingSfxModes.Length -gt 0) {
+        $mergedSfxModes = [string[]]($existingSfxModes + $targetModes | Select-Object -Unique)
+        $key.SetValue($pkeySfxModes, $mergedSfxModes, [Microsoft.Win32.RegistryValueKind]::MultiString)
     } else {
-        $key.SetValue("PermadB_Created_EFXModes", 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+        $key.SetValue($pkeySfxModes, $targetModes, [Microsoft.Win32.RegistryValueKind]::MultiString)
+    }
+
+    $existingEfxModes = $key.GetValue($pkeyEfxModes)
+    if ($existingEfxModes -and $existingEfxModes.Length -gt 0) {
+        $mergedEfxModes = [string[]]($existingEfxModes + $targetModes | Select-Object -Unique)
+        $key.SetValue($pkeyEfxModes, $mergedEfxModes, [Microsoft.Win32.RegistryValueKind]::MultiString)
+    } else {
         $key.SetValue($pkeyEfxModes, $targetModes, [Microsoft.Win32.RegistryValueKind]::MultiString)
     }
 
@@ -180,7 +224,7 @@ try {
     $key.Close()
 }
 
-Write-Host "      Endpoint Effects configured successfully." -ForegroundColor Green
+Write-Host "      Dual-Stage (SFX + EFX) Effects configured successfully." -ForegroundColor Green
 
 # 6. Configuration Complete
 Write-Host "[5/5] Endpoint & APO Registry configuration complete." -ForegroundColor Green

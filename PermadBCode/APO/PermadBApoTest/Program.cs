@@ -11,10 +11,23 @@ using NAudio.Wave;
 namespace PermadBApoTest;
 
 [StructLayout(LayoutKind.Sequential, Pack = 8)]
+public struct PermadBSfxSlot
+{
+    public uint Active;
+    public uint InstanceId;
+    public uint AudioProcessingMode;
+    public float InputPeak;
+    public float OutputPeak;
+    public float TargetCeilingLinear;
+    public uint Bypass;
+    public uint MatchedProcessId;
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 8)]
 public struct PermadBApoTelemetry
 {
     public uint Magic;                  // "PERM" (0x5045524D)
-    public uint Version;                // 2 (Phase 2 Lookahead Limiter)
+    public uint Version;                // 3 (Dual-Stage SFX + EFX)
     public uint AudiodgPid;             // PID of audiodg.exe
     public uint SampleRate;             // e.g. 48000
     public uint ChannelCount;           // e.g. 2
@@ -36,6 +49,24 @@ public struct PermadBApoTelemetry
     public float TargetCeilingDbfs;     // Control to APO: target dBFS ceiling
     public uint IsEnabled;              // Control to APO: 1 = active, 0 = bypass
     public uint CommandSeq;             // Incremented when command changed
+    public float MasterSafetyCeilingLinear;
+    public uint SfxActiveCount;
+    public PermadBSfxSlot Slot0;
+    public PermadBSfxSlot Slot1;
+    public PermadBSfxSlot Slot2;
+    public PermadBSfxSlot Slot3;
+    public PermadBSfxSlot Slot4;
+    public PermadBSfxSlot Slot5;
+    public PermadBSfxSlot Slot6;
+    public PermadBSfxSlot Slot7;
+    public PermadBSfxSlot Slot8;
+    public PermadBSfxSlot Slot9;
+    public PermadBSfxSlot Slot10;
+    public PermadBSfxSlot Slot11;
+    public PermadBSfxSlot Slot12;
+    public PermadBSfxSlot Slot13;
+    public PermadBSfxSlot Slot14;
+    public PermadBSfxSlot Slot15;
 }
 
 public class SineWaveProvider : WaveStream

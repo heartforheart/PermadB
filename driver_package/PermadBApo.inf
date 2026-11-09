@@ -30,12 +30,12 @@ PermadBApo.dll
 AddService = ,2    ; No function driver, install a null driver for software component
 
 [PermadBAPO_AddReg]
-; COM Classes CLSID registration for the Limiter APO
+; COM Classes CLSID registration for the Limiter APO (EFX)
 HKR,Classes\CLSID\%PERMADB_LIMITER_APO_CLSID%,,,%APO_FriendlyName%
 HKR,Classes\CLSID\%PERMADB_LIMITER_APO_CLSID%\InProcServer32,,%REG_EXPAND_SZ%,%13%\PermadBApo.dll
 HKR,Classes\CLSID\%PERMADB_LIMITER_APO_CLSID%\InProcServer32,ThreadingModel,,"Both"
 
-; AudioEngine AudioProcessingObjects registration
+; AudioEngine AudioProcessingObjects registration (EFX)
 HKR,AudioEngine\AudioProcessingObjects\%PERMADB_LIMITER_APO_CLSID%,"FriendlyName",,%APO_FriendlyName%
 HKR,AudioEngine\AudioProcessingObjects\%PERMADB_LIMITER_APO_CLSID%,"Copyright",,%Copyright%
 HKR,AudioEngine\AudioProcessingObjects\%PERMADB_LIMITER_APO_CLSID%,"MajorVersion",%REG_DWORD%,1
@@ -48,6 +48,25 @@ HKR,AudioEngine\AudioProcessingObjects\%PERMADB_LIMITER_APO_CLSID%,"MaxOutputCon
 HKR,AudioEngine\AudioProcessingObjects\%PERMADB_LIMITER_APO_CLSID%,"MaxInstances",%REG_DWORD%,0xffffffff
 HKR,AudioEngine\AudioProcessingObjects\%PERMADB_LIMITER_APO_CLSID%,"NumAPOInterfaces",%REG_DWORD%,1
 HKR,AudioEngine\AudioProcessingObjects\%PERMADB_LIMITER_APO_CLSID%,"APOInterface0",,%APO_INTERFACE_IAPO%
+
+; COM Classes CLSID registration for the Stream Limiter APO (SFX)
+HKR,Classes\CLSID\%PERMADB_SFX_APO_CLSID%,,,%APO_SFX_FriendlyName%
+HKR,Classes\CLSID\%PERMADB_SFX_APO_CLSID%\InProcServer32,,%REG_EXPAND_SZ%,%13%\PermadBApo.dll
+HKR,Classes\CLSID\%PERMADB_SFX_APO_CLSID%\InProcServer32,ThreadingModel,,"Both"
+
+; AudioEngine AudioProcessingObjects registration (SFX)
+HKR,AudioEngine\AudioProcessingObjects\%PERMADB_SFX_APO_CLSID%,"FriendlyName",,%APO_SFX_FriendlyName%
+HKR,AudioEngine\AudioProcessingObjects\%PERMADB_SFX_APO_CLSID%,"Copyright",,%Copyright%
+HKR,AudioEngine\AudioProcessingObjects\%PERMADB_SFX_APO_CLSID%,"MajorVersion",%REG_DWORD%,1
+HKR,AudioEngine\AudioProcessingObjects\%PERMADB_SFX_APO_CLSID%,"MinorVersion",%REG_DWORD%,0
+HKR,AudioEngine\AudioProcessingObjects\%PERMADB_SFX_APO_CLSID%,"Flags",%REG_DWORD%,%APO_FLAG_DEFAULT%
+HKR,AudioEngine\AudioProcessingObjects\%PERMADB_SFX_APO_CLSID%,"MinInputConnections",%REG_DWORD%,1
+HKR,AudioEngine\AudioProcessingObjects\%PERMADB_SFX_APO_CLSID%,"MaxInputConnections",%REG_DWORD%,1
+HKR,AudioEngine\AudioProcessingObjects\%PERMADB_SFX_APO_CLSID%,"MinOutputConnections",%REG_DWORD%,1
+HKR,AudioEngine\AudioProcessingObjects\%PERMADB_SFX_APO_CLSID%,"MaxOutputConnections",%REG_DWORD%,1
+HKR,AudioEngine\AudioProcessingObjects\%PERMADB_SFX_APO_CLSID%,"MaxInstances",%REG_DWORD%,0xffffffff
+HKR,AudioEngine\AudioProcessingObjects\%PERMADB_SFX_APO_CLSID%,"NumAPOInterfaces",%REG_DWORD%,1
+HKR,AudioEngine\AudioProcessingObjects\%PERMADB_SFX_APO_CLSID%,"APOInterface0",,%APO_INTERFACE_IAPO%
 
 ; Friendly Name
 HKR,,FriendlyName,,%Apo.ComponentDesc%
@@ -72,10 +91,12 @@ ProviderName                = "PermadB"
 MfgName                     = "PermadB Project"
 DiskName                    = "PermadB APO Installation Disk"
 Apo.ComponentDesc           = "PermadB Audio Processing Object"
-APO_FriendlyName            = "PermadB Limiter APO"
+APO_FriendlyName            = "PermadB Master Limiter EFX APO"
+APO_SFX_FriendlyName        = "PermadB Stream Limiter SFX APO"
 Copyright                   = "PermadB"
 
 PERMADB_LIMITER_APO_CLSID   = "{968ff234-1895-49f1-8b97-9d9075eb25b6}"
+PERMADB_SFX_APO_CLSID       = "{b41e8c71-2947-4e3a-965a-06385d8204d1}"
 APO_INTERFACE_IAPO          = "{FD7F2B29-24D0-4B5C-B177-592C39F9CA10}"
 
 ; APO Flags: 15 (APO_FLAG_FRAMESPERSECOND_MUST_MATCH | APO_FLAG_BITSPERSAMPLE_MUST_MATCH | APO_FLAG_MIXER | APO_FLAG_DEFAULT)

@@ -170,37 +170,46 @@ public static class InstallerEngine
                 }
             }
 
-            // COM & AudioEngine registration for the APO
+            // COM & AudioEngine registration for the APO (EFX & SFX)
             try
             {
-                using var clsidKey = Registry.LocalMachine.CreateSubKey(@"SOFTWARE\Classes\CLSID\{968ff234-1895-49f1-8b97-9d9075eb25b6}", true);
-                if (clsidKey != null)
+                var apoEntries = new[]
                 {
-                    clsidKey.SetValue("", "PermadB Limiter APO", RegistryValueKind.String);
-                    using var inprocKey = clsidKey.CreateSubKey("InProcServer32", true);
-                    if (inprocKey != null)
-                    {
-                        inprocKey.SetValue("", apoDllPath, RegistryValueKind.String);
-                        inprocKey.SetValue("ThreadingModel", "Both", RegistryValueKind.String);
-                    }
-                }
+                    (Clsid: "{968ff234-1895-49f1-8b97-9d9075eb25b6}", Name: "PermadB Master Limiter EFX APO"),
+                    (Clsid: "{b41e8c71-2947-4e3a-965a-06385d8204d1}", Name: "PermadB Stream Limiter SFX APO")
+                };
 
-                using var apoKey = Registry.LocalMachine.CreateSubKey(@"SOFTWARE\Classes\AudioEngine\AudioProcessingObjects\{968ff234-1895-49f1-8b97-9d9075eb25b6}", true);
-                if (apoKey != null)
+                foreach (var entry in apoEntries)
                 {
-                    apoKey.SetValue("FriendlyName", "PermadB Limiter APO", RegistryValueKind.String);
-                    apoKey.SetValue("Copyright", "PermadB", RegistryValueKind.String);
-                    apoKey.SetValue("MajorVersion", 1, RegistryValueKind.DWord);
-                    apoKey.SetValue("MinorVersion", 0, RegistryValueKind.DWord);
-                    apoKey.SetValue("Flags", 15, RegistryValueKind.DWord);
-                    apoKey.SetValue("MinInputConnections", 1, RegistryValueKind.DWord);
-                    apoKey.SetValue("MaxInputConnections", 1, RegistryValueKind.DWord);
-                    apoKey.SetValue("MinOutputConnections", 1, RegistryValueKind.DWord);
-                    apoKey.SetValue("MaxOutputConnections", 1, RegistryValueKind.DWord);
-                    apoKey.SetValue("MaxInstances", unchecked((int)0xFFFFFFFF), RegistryValueKind.DWord);
-                    apoKey.SetValue("NumAPOInterfaces", 1, RegistryValueKind.DWord);
-                    apoKey.SetValue("APOInterface0", "{FD7F2B29-24D0-4B5C-B177-592C39F9CA10}", RegistryValueKind.String);
-                    try { apoKey.DeleteValue("APOInterface1", false); } catch { }
+                    using var clsidKey = Registry.LocalMachine.CreateSubKey($@"SOFTWARE\Classes\CLSID\{entry.Clsid}", true);
+                    if (clsidKey != null)
+                    {
+                        clsidKey.SetValue("", entry.Name, RegistryValueKind.String);
+                        using var inprocKey = clsidKey.CreateSubKey("InProcServer32", true);
+                        if (inprocKey != null)
+                        {
+                            inprocKey.SetValue("", apoDllPath, RegistryValueKind.String);
+                            inprocKey.SetValue("ThreadingModel", "Both", RegistryValueKind.String);
+                        }
+                    }
+
+                    using var apoKey = Registry.LocalMachine.CreateSubKey($@"SOFTWARE\Classes\AudioEngine\AudioProcessingObjects\{entry.Clsid}", true);
+                    if (apoKey != null)
+                    {
+                        apoKey.SetValue("FriendlyName", entry.Name, RegistryValueKind.String);
+                        apoKey.SetValue("Copyright", "PermadB", RegistryValueKind.String);
+                        apoKey.SetValue("MajorVersion", 1, RegistryValueKind.DWord);
+                        apoKey.SetValue("MinorVersion", 0, RegistryValueKind.DWord);
+                        apoKey.SetValue("Flags", 15, RegistryValueKind.DWord);
+                        apoKey.SetValue("MinInputConnections", 1, RegistryValueKind.DWord);
+                        apoKey.SetValue("MaxInputConnections", 1, RegistryValueKind.DWord);
+                        apoKey.SetValue("MinOutputConnections", 1, RegistryValueKind.DWord);
+                        apoKey.SetValue("MaxOutputConnections", 1, RegistryValueKind.DWord);
+                        apoKey.SetValue("MaxInstances", unchecked((int)0xFFFFFFFF), RegistryValueKind.DWord);
+                        apoKey.SetValue("NumAPOInterfaces", 1, RegistryValueKind.DWord);
+                        apoKey.SetValue("APOInterface0", "{FD7F2B29-24D0-4B5C-B177-592C39F9CA10}", RegistryValueKind.String);
+                        try { apoKey.DeleteValue("APOInterface1", false); } catch { }
+                    }
                 }
             }
             catch (Exception ex)
@@ -222,8 +231,12 @@ public static class InstallerEngine
 
     private static void ConfigureEndpointFxProperties()
     {
-        const string clsid = "{968ff234-1895-49f1-8b97-9d9075eb25b6}";
+        const string clsidEfx = "{968ff234-1895-49f1-8b97-9d9075eb25b6}";
+        const string clsidSfx = "{b41e8c71-2947-4e3a-965a-06385d8204d1}";
+
+        const string pkeySfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},5";
         const string pkeyEfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},7";
+        const string pkeyCompositeSfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},13";
         const string pkeyCompositeEfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},15";
         const string pkeySfxModes = "{d3993a3f-99c2-4402-b5ec-a92a0367664b},5";
         const string pkeyEfxModes = "{d3993a3f-99c2-4402-b5ec-a92a0367664b},7";
@@ -314,44 +327,88 @@ public static class InstallerEngine
                                 }
                                 catch { }
 
-                                // 1. Preserve and configure PKEY_FX_EndpointEffectClsid (,7)
+                                // 1. Configure SFX (Pre-Mix Stream Effect)
+                                var existingSfx = fxKey.GetValue(pkeySfx) as string;
+                                if (!string.IsNullOrEmpty(existingSfx) && !string.Equals(existingSfx, clsidSfx, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    if (fxKey.GetValue("PermadB_Backup_SFX") == null)
+                                    {
+                                        fxKey.SetValue("PermadB_Backup_SFX", existingSfx, RegistryValueKind.String);
+                                    }
+                                }
+                                fxKey.SetValue(pkeySfx, clsidSfx, RegistryValueKind.String);
+
+                                var existingCompSfx = fxKey.GetValue(pkeyCompositeSfx) as string[];
+                                if (existingCompSfx != null && existingCompSfx.Length > 0)
+                                {
+                                    if (!existingCompSfx.Any(s => string.Equals(s, clsidSfx, StringComparison.OrdinalIgnoreCase)))
+                                    {
+                                        if (fxKey.GetValue("PermadB_Backup_CompositeSFX") == null)
+                                        {
+                                            fxKey.SetValue("PermadB_Backup_CompositeSFX", existingCompSfx, RegistryValueKind.MultiString);
+                                        }
+                                        var newCompSfx = existingCompSfx.Append(clsidSfx).ToArray();
+                                        fxKey.SetValue(pkeyCompositeSfx, newCompSfx, RegistryValueKind.MultiString);
+                                    }
+                                }
+                                else
+                                {
+                                    fxKey.SetValue("PermadB_Created_CompositeSFX", 1, RegistryValueKind.DWord);
+                                    fxKey.SetValue(pkeyCompositeSfx, new string[] { clsidSfx }, RegistryValueKind.MultiString);
+                                }
+
+                                // 2. Configure EFX (Post-Mix Endpoint Effect)
                                 var existingEfx = fxKey.GetValue(pkeyEfx) as string;
-                                if (!string.IsNullOrEmpty(existingEfx) && !string.Equals(existingEfx, clsid, StringComparison.OrdinalIgnoreCase))
+                                if (!string.IsNullOrEmpty(existingEfx) && !string.Equals(existingEfx, clsidEfx, StringComparison.OrdinalIgnoreCase))
                                 {
                                     if (fxKey.GetValue("PermadB_Backup_EFX") == null)
                                     {
                                         fxKey.SetValue("PermadB_Backup_EFX", existingEfx, RegistryValueKind.String);
                                     }
                                 }
-                                fxKey.SetValue(pkeyEfx, clsid, RegistryValueKind.String);
+                                fxKey.SetValue(pkeyEfx, clsidEfx, RegistryValueKind.String);
 
-                                // 2. Preserve and configure PKEY_CompositeFX_EndpointEffectClsid (,15)
+                                // 3. Configure CompositeEFX
                                 var existingComp = fxKey.GetValue(pkeyCompositeEfx) as string[];
                                 if (existingComp != null && existingComp.Length > 0)
                                 {
-                                    if (!existingComp.Any(s => string.Equals(s, clsid, StringComparison.OrdinalIgnoreCase)))
+                                    if (!existingComp.Any(s => string.Equals(s, clsidEfx, StringComparison.OrdinalIgnoreCase)))
                                     {
                                         if (fxKey.GetValue("PermadB_Backup_CompositeEFX") == null)
                                         {
                                             fxKey.SetValue("PermadB_Backup_CompositeEFX", existingComp, RegistryValueKind.MultiString);
                                         }
-                                        var newComp = existingComp.Append(clsid).ToArray();
+                                        var newComp = existingComp.Append(clsidEfx).ToArray();
                                         fxKey.SetValue(pkeyCompositeEfx, newComp, RegistryValueKind.MultiString);
                                     }
                                 }
                                 else
                                 {
                                     fxKey.SetValue("PermadB_Created_CompositeEFX", 1, RegistryValueKind.DWord);
-                                    fxKey.SetValue(pkeyCompositeEfx, new string[] { clsid }, RegistryValueKind.MultiString);
+                                    fxKey.SetValue(pkeyCompositeEfx, new string[] { clsidEfx }, RegistryValueKind.MultiString);
                                 }
 
-                                // 3. Preserve and configure PKEY_EFX_ProcessingModes_Supported_For_Streaming (,7)
-                                var existingEfxModes = fxKey.GetValue(pkeyEfxModes) as string[];
-                                var sfxModes = fxKey.GetValue(pkeySfxModes) as string[];
-                                var targetModes = sfxModes != null && sfxModes.Length > 0
-                                    ? sfxModes
-                                    : new string[] { "{C18E2F7E-933D-4965-B7D1-1EEF228D2AF3}" };
+                                // 4. Configure Processing Modes for SFX and EFX
+                                var targetModes = new[]
+                                {
+                                    "{C18E2F7E-933D-4965-B7D1-1EEF228D2AF3}", // Default
+                                    "{98951333-B9CD-48B1-A0A3-FF40682D73F7}", // Communications
+                                    "{FC1CF0A4-3860-4592-8232-A567847BE2D1}", // Speech
+                                    "{47800040-4533-461B-9B4C-9E9D77B11057}"  // Media
+                                };
 
+                                var existingSfxModes = fxKey.GetValue(pkeySfxModes) as string[];
+                                if (existingSfxModes != null && existingSfxModes.Length > 0)
+                                {
+                                    var mergedSfxModes = existingSfxModes.Union(targetModes, StringComparer.OrdinalIgnoreCase).ToArray();
+                                    fxKey.SetValue(pkeySfxModes, mergedSfxModes, RegistryValueKind.MultiString);
+                                }
+                                else
+                                {
+                                    fxKey.SetValue(pkeySfxModes, targetModes, RegistryValueKind.MultiString);
+                                }
+
+                                var existingEfxModes = fxKey.GetValue(pkeyEfxModes) as string[];
                                 if (existingEfxModes != null && existingEfxModes.Length > 0)
                                 {
                                     if (fxKey.GetValue("PermadB_Backup_EFXModes") == null)

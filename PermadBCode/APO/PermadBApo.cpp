@@ -16,7 +16,20 @@ static void LogApo(const wchar_t* format, ...)
 
 static const CRegAPOProperties<1> sm_RegProperties(
     CLSID_PermadBLimiterAPO,
-    L"PermadB Limiter APO",
+    L"PermadB Master Limiter EFX APO",
+    L"Copyright (c) PermadB",
+    1,
+    0,
+    __uuidof(IAudioProcessingObject),
+    static_cast<APO_FLAG>(DEFAULT_APOREG_FLAGS | APO_FLAG_INPLACE),
+    1, 1,
+    1, 1,
+    DEFAULT_APOREG_MAXINSTANCES
+);
+
+static const CRegAPOProperties<1> sm_RegPropertiesSfx(
+    CLSID_PermadBSfxApo,
+    L"PermadB Stream Limiter SFX APO",
     L"Copyright (c) PermadB",
     1,
     0,
@@ -389,10 +402,16 @@ STDMETHODIMP_(void) CPermadBLimiterAPO::APOProcess(
 
             if (targetLin >= 0.001f && targetLin <= 1.0f)
             {
-                m_limiter.SetCeilingLinear(targetLin);
+                float effCeiling = targetLin;
+                float masterSafe = m_pTelemetry->masterSafetyCeilingLinear;
+                if (masterSafe >= 0.001f && masterSafe <= 1.0f && masterSafe < effCeiling)
+                {
+                    effCeiling = masterSafe;
+                }
+                m_limiter.SetCeilingLinear(effCeiling);
                 m_limiter.SetEnabled(enabled);
                 LogApo(L"Dynamic ceiling updated: %.1f%% (%.4f linear, %.2fdBFS, enabled=%d)",
-                    targetLin * 100.0f, targetLin, m_limiter.GetCeilingDbfs(), enabled ? 1 : 0);
+                    effCeiling * 100.0f, effCeiling, m_limiter.GetCeilingDbfs(), enabled ? 1 : 0);
             }
         }
     }
@@ -465,7 +484,7 @@ STDMETHODIMP CPermadBLimiterAPO::GetEffectsList(
 }
 
 // --------------------------------------------------------------------------
-// COM Class Factory Implementation
+// COM Class Factory Implementation (EFX)
 // --------------------------------------------------------------------------
 class CPermadBLimiterClassFactory : public IClassFactory
 {
@@ -497,45 +516,511 @@ public:
 
     STDMETHODIMP CreateInstance(IUnknown* pUnkOuter, REFIID riid, void** ppv) override
     {
-        WCHAR iidStr[64] = { 0 };
-        StringFromGUID2(riid, iidStr, 64);
-        LogApo(L"CPermadBLimiterClassFactory::CreateInstance called (pUnkOuter=%p, riid=%s)", pUnkOuter, iidStr);
-
-        if (!ppv)
-        {
-            LogApo(L"CreateInstance returning E_POINTER");
-            return E_POINTER;
-        }
+        if (!ppv) return E_POINTER;
         *ppv = nullptr;
 
         if (pUnkOuter != nullptr && riid != IID_IUnknown)
         {
-            LogApo(L"CreateInstance: aggregating but riid != IID_IUnknown, returning E_NOINTERFACE");
             return E_NOINTERFACE;
         }
 
-        LogApo(L"CreateInstance: allocating CPermadBLimiterAPO (pUnkOuter=%p)...", pUnkOuter);
         CPermadBLimiterAPO* pApo = new (std::nothrow) CPermadBLimiterAPO(pUnkOuter);
-        if (!pApo)
-        {
-            LogApo(L"CreateInstance: allocation failed (new returned nullptr)");
-            return E_OUTOFMEMORY;
-        }
+        if (!pApo) return E_OUTOFMEMORY;
 
         HRESULT hr;
         if (pUnkOuter != nullptr)
         {
             *ppv = static_cast<IUnknown*>(pApo->GetNonDelegatingUnknown());
             hr = S_OK;
-            LogApo(L"CreateInstance (aggregated): returning non-delegating IUnknown %p", *ppv);
         }
         else
         {
             hr = pApo->GetNonDelegatingUnknown()->QueryInterface(riid, ppv);
             pApo->GetNonDelegatingUnknown()->Release();
-            LogApo(L"CreateInstance (non-aggregated): QueryInterface returned 0x%08X (ppv=%p)", hr, *ppv);
+        }
+        return hr;
+    }
+
+    STDMETHODIMP LockServer(BOOL fLock) override
+    {
+        if (fLock) InterlockedIncrement(&g_cServerLocks);
+        else InterlockedDecrement(&g_cServerLocks);
+        return S_OK;
+    }
+};
+
+// --------------------------------------------------------------------------
+// CPermadBSfxApo Implementation (Stage 1: Pre-Mix Per-Stream Limiter)
+// --------------------------------------------------------------------------
+static const GUID PermadB_MODE_COMMUNICATIONS =
+    { 0x98951333, 0xb9cd, 0x48b1, { 0xa0, 0xa3, 0xff, 0x40, 0x68, 0x2d, 0x73, 0xf7 } };
+static const GUID PermadB_MODE_SPEECH =
+    { 0xfc1cf0a4, 0x3860, 0x4592, { 0x82, 0x32, 0xa5, 0x67, 0x84, 0x7b, 0xe2, 0xd1 } };
+static const GUID PermadB_MODE_MEDIA =
+    { 0x47800040, 0x4533, 0x461b, { 0x9b, 0x4c, 0x9e, 0x9d, 0x77, 0xb1, 0x10, 0x57 } };
+static const GUID PermadB_MODE_MOVIE =
+    { 0xb26fedb9, 0x886c, 0x430b, { 0x80, 0x18, 0xcb, 0x54, 0x67, 0xe9, 0xfc, 0x0e } };
+
+CPermadBSfxApo::CPermadBSfxApo(IUnknown* pUnkOuter) :
+    CBaseAudioProcessingObject(sm_RegPropertiesSfx),
+    m_nonDelegatingUnknown(this),
+    m_pUnkOuter(pUnkOuter ? pUnkOuter : &m_nonDelegatingUnknown),
+    m_pTelemetry(nullptr),
+    m_hFile(INVALID_HANDLE_VALUE),
+    m_hMapFile(NULL),
+    m_hEffectsChangedEvent(NULL),
+    m_slotIndex(-1),
+    m_instanceId(0),
+    m_audioProcessingMode(PermadBMode_Default)
+{
+    InterlockedIncrement(&g_cComponents);
+    InitTelemetry();
+}
+
+CPermadBSfxApo::~CPermadBSfxApo()
+{
+    ReleaseSlot();
+    CleanupTelemetry();
+    if (m_hEffectsChangedEvent != NULL)
+    {
+        CloseHandle(m_hEffectsChangedEvent);
+        m_hEffectsChangedEvent = NULL;
+    }
+    InterlockedDecrement(&g_cComponents);
+}
+
+void CPermadBSfxApo::InitTelemetry()
+{
+    m_hFile = CreateFileW(
+        L"C:\\Users\\Public\\permadb_apo_telemetry.dat",
+        GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        NULL,
+        OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL
+    );
+
+    if (m_hFile != INVALID_HANDLE_VALUE)
+    {
+        LARGE_INTEGER size;
+        size.QuadPart = sizeof(PermadBApoTelemetry);
+        SetFilePointerEx(m_hFile, size, NULL, FILE_BEGIN);
+        SetEndOfFile(m_hFile);
+
+        m_hMapFile = CreateFileMappingW(
+            m_hFile,
+            NULL,
+            PAGE_READWRITE,
+            0,
+            sizeof(PermadBApoTelemetry),
+            NULL
+        );
+
+        if (m_hMapFile != NULL)
+        {
+            m_pTelemetry = reinterpret_cast<PermadBApoTelemetry*>(
+                MapViewOfFile(m_hMapFile, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(PermadBApoTelemetry))
+            );
+        }
+    }
+}
+
+void CPermadBSfxApo::CleanupTelemetry()
+{
+    if (m_pTelemetry != nullptr)
+    {
+        UnmapViewOfFile(m_pTelemetry);
+        m_pTelemetry = nullptr;
+    }
+    if (m_hMapFile != NULL)
+    {
+        CloseHandle(m_hMapFile);
+        m_hMapFile = NULL;
+    }
+    if (m_hFile != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(m_hFile);
+        m_hFile = INVALID_HANDLE_VALUE;
+    }
+}
+
+int CPermadBSfxApo::ClaimSlot(UINT32 mode)
+{
+    if (!m_pTelemetry) return -1;
+
+    for (int i = 0; i < PERMADB_SFX_MAX_SLOTS; ++i)
+    {
+        if (InterlockedCompareExchange(reinterpret_cast<volatile LONG*>(&m_pTelemetry->slots[i].active), 1, 0) == 0)
+        {
+            static volatile LONG s_instanceCounter = 1000;
+            UINT32 instId = static_cast<UINT32>(InterlockedIncrement(&s_instanceCounter));
+            m_instanceId = instId;
+            m_pTelemetry->slots[i].instanceId = instId;
+            m_pTelemetry->slots[i].audioProcessingMode = mode;
+            m_pTelemetry->slots[i].inputPeak = 0.0f;
+            m_pTelemetry->slots[i].outputPeak = 0.0f;
+
+            // Fail-safe default on sample 0: Safe Ceiling (-16.0 dBFS / 0.1585 linear)
+            float safeCeiling = 0.1585f;
+            if (m_pTelemetry->targetCeilingLinear >= 0.001f && m_pTelemetry->targetCeilingLinear <= 1.0f)
+            {
+                safeCeiling = m_pTelemetry->targetCeilingLinear;
+            }
+            m_pTelemetry->slots[i].targetCeilingLinear = safeCeiling;
+            m_pTelemetry->slots[i].bypass = 0;
+            m_pTelemetry->slots[i].matchedProcessId = 0;
+
+            InterlockedIncrement(reinterpret_cast<volatile LONG*>(&m_pTelemetry->sfxActiveCount));
+            return i;
+        }
+    }
+    return -1;
+}
+
+void CPermadBSfxApo::ReleaseSlot()
+{
+    if (!m_pTelemetry || m_slotIndex < 0 || m_slotIndex >= PERMADB_SFX_MAX_SLOTS) return;
+
+    m_pTelemetry->slots[m_slotIndex].inputPeak = 0.0f;
+    m_pTelemetry->slots[m_slotIndex].outputPeak = 0.0f;
+    m_pTelemetry->slots[m_slotIndex].matchedProcessId = 0;
+    m_pTelemetry->slots[m_slotIndex].bypass = 0;
+    InterlockedExchange(reinterpret_cast<volatile LONG*>(&m_pTelemetry->slots[m_slotIndex].active), 0);
+    InterlockedDecrement(reinterpret_cast<volatile LONG*>(&m_pTelemetry->sfxActiveCount));
+    m_slotIndex = -1;
+}
+
+// CNonDelegatingUnknownSfx
+CNonDelegatingUnknownSfx::CNonDelegatingUnknownSfx(CPermadBSfxApo* pOwner) :
+    m_pOwner(pOwner),
+    m_cRef(1)
+{
+}
+
+STDMETHODIMP CNonDelegatingUnknownSfx::QueryInterface(REFIID riid, void** ppv)
+{
+    if (!ppv) return E_POINTER;
+    *ppv = nullptr;
+
+    if (riid == IID_IUnknown)
+    {
+        *ppv = static_cast<IUnknown*>(this);
+    }
+    else if (riid == __uuidof(IAudioProcessingObject))
+    {
+        *ppv = static_cast<IAudioProcessingObject*>(m_pOwner);
+    }
+    else if (riid == __uuidof(IAudioProcessingObjectConfiguration))
+    {
+        *ppv = static_cast<IAudioProcessingObjectConfiguration*>(m_pOwner);
+    }
+    else if (riid == __uuidof(IAudioProcessingObjectRT))
+    {
+        *ppv = static_cast<IAudioProcessingObjectRT*>(m_pOwner);
+    }
+    else if (riid == __uuidof(IAudioSystemEffects))
+    {
+        *ppv = static_cast<IAudioSystemEffects*>(m_pOwner);
+    }
+    else if (riid == __uuidof(IAudioSystemEffects2))
+    {
+        *ppv = static_cast<IAudioSystemEffects2*>(m_pOwner);
+    }
+    else
+    {
+        return E_NOINTERFACE;
+    }
+
+    reinterpret_cast<IUnknown*>(*ppv)->AddRef();
+    return S_OK;
+}
+
+STDMETHODIMP_(ULONG) CNonDelegatingUnknownSfx::AddRef()
+{
+    return InterlockedIncrement(&m_cRef);
+}
+
+STDMETHODIMP_(ULONG) CNonDelegatingUnknownSfx::Release()
+{
+    ULONG c = InterlockedDecrement(&m_cRef);
+    if (c == 0)
+    {
+        delete m_pOwner;
+    }
+    return c;
+}
+
+// Delegating IUnknown for CPermadBSfxApo
+STDMETHODIMP CPermadBSfxApo::QueryInterface(REFIID riid, void** ppv)
+{
+    return m_pUnkOuter->QueryInterface(riid, ppv);
+}
+
+STDMETHODIMP_(ULONG) CPermadBSfxApo::AddRef()
+{
+    return m_pUnkOuter->AddRef();
+}
+
+STDMETHODIMP_(ULONG) CPermadBSfxApo::Release()
+{
+    return m_pUnkOuter->Release();
+}
+
+// IAudioProcessingObject (SFX)
+STDMETHODIMP CPermadBSfxApo::Initialize(UINT32 cbDataSize, BYTE* pbyData)
+{
+    if (cbDataSize != 0 && pbyData == nullptr) return E_INVALIDARG;
+    if (cbDataSize == 0 && pbyData != nullptr) return E_INVALIDARG;
+
+    UINT32 mode = PermadBMode_Default;
+    if (cbDataSize >= sizeof(APOInitSystemEffects2) && pbyData != nullptr)
+    {
+        APOInitSystemEffects2* pInit2 = reinterpret_cast<APOInitSystemEffects2*>(pbyData);
+        GUID m = pInit2->AudioProcessingMode;
+        if (IsEqualGUID(m, PermadB_MODE_COMMUNICATIONS) ||
+            IsEqualGUID(m, PermadB_MODE_SPEECH))
+        {
+            mode = PermadBMode_Communications;
+        }
+        else if (IsEqualGUID(m, PermadB_MODE_MEDIA) ||
+                 IsEqualGUID(m, PermadB_MODE_MOVIE))
+        {
+            mode = PermadBMode_Media;
+        }
+        else
+        {
+            mode = PermadBMode_Default;
+        }
+    }
+    m_audioProcessingMode = mode;
+
+    if (m_slotIndex < 0)
+    {
+        m_slotIndex = ClaimSlot(mode);
+    }
+
+    m_bIsInitialized = true;
+    return S_OK;
+}
+
+STDMETHODIMP CPermadBSfxApo::Reset()
+{
+    m_limiter.Reset();
+    return CBaseAudioProcessingObject::Reset();
+}
+
+STDMETHODIMP CPermadBSfxApo::LockForProcess(
+    UINT32 u32NumInputConnections,
+    APO_CONNECTION_DESCRIPTOR** ppInputConnections,
+    UINT32 u32NumOutputConnections,
+    APO_CONNECTION_DESCRIPTOR** ppOutputConnections)
+{
+    HRESULT hr = CBaseAudioProcessingObject::LockForProcess(
+        u32NumInputConnections,
+        ppInputConnections,
+        u32NumOutputConnections,
+        ppOutputConnections
+    );
+    if (SUCCEEDED(hr))
+    {
+        uint32_t sampleRate = static_cast<uint32_t>(GetFramesPerSecond());
+        uint32_t channels = static_cast<uint32_t>(GetSamplesPerFrame());
+        m_limiter.Init(sampleRate, channels);
+
+        float safeCeiling = 0.1585f;
+        if (m_pTelemetry && m_pTelemetry->targetCeilingLinear >= 0.001f && m_pTelemetry->targetCeilingLinear <= 1.0f)
+        {
+            safeCeiling = m_pTelemetry->targetCeilingLinear;
+        }
+        m_limiter.SetCeilingLinear(safeCeiling);
+        m_limiter.SetEnabled(true);
+    }
+    return hr;
+}
+
+STDMETHODIMP CPermadBSfxApo::UnlockForProcess()
+{
+    m_limiter.Reset();
+    return CBaseAudioProcessingObject::UnlockForProcess();
+}
+
+// IAudioProcessingObjectRT (SFX)
+STDMETHODIMP_(void) CPermadBSfxApo::APOProcess(
+    UINT32 u32NumInputConnections,
+    APO_CONNECTION_PROPERTY** ppInputConnections,
+    UINT32 u32NumOutputConnections,
+    APO_CONNECTION_PROPERTY** ppOutputConnections)
+{
+    if (!m_bIsLocked || u32NumInputConnections == 0 || u32NumOutputConnections == 0)
+        return;
+
+    APO_CONNECTION_PROPERTY* pIn = ppInputConnections[0];
+    APO_CONNECTION_PROPERTY* pOut = ppOutputConnections[0];
+
+    if (!pIn || !pOut || !pIn->pBuffer || !pOut->pBuffer)
+        return;
+
+    UINT32 u32Frames = pIn->u32ValidFrameCount;
+    UINT32 u32Channels = GetSamplesPerFrame();
+    FLOAT32* pf32In = reinterpret_cast<FLOAT32*>(pIn->pBuffer);
+    FLOAT32* pf32Out = reinterpret_cast<FLOAT32*>(pOut->pBuffer);
+
+    if (pIn->u32BufferFlags == BUFFER_SILENT)
+    {
+        ZeroMemory(pf32In, sizeof(FLOAT32) * u32Frames * u32Channels);
+        m_limiter.Process(pf32In, pf32Out, u32Frames);
+        FLOAT32 silentOutPeak = 0.0f;
+        for (UINT32 i = 0; i < u32Frames * u32Channels; ++i)
+        {
+            FLOAT32 a = std::abs(pf32Out[i]);
+            if (a > silentOutPeak) silentOutPeak = a;
+        }
+        pOut->u32ValidFrameCount = u32Frames;
+        pOut->u32BufferFlags = (silentOutPeak < 0.00001f) ? BUFFER_SILENT : BUFFER_VALID;
+        if (m_pTelemetry && m_slotIndex >= 0 && m_slotIndex < PERMADB_SFX_MAX_SLOTS)
+        {
+            m_pTelemetry->slots[m_slotIndex].inputPeak *= 0.90f;
+            m_pTelemetry->slots[m_slotIndex].outputPeak *= 0.90f;
+        }
+        return;
+    }
+
+    FLOAT32 peakIn = 0.0f;
+    UINT32 totalSamples = u32Frames * u32Channels;
+    for (UINT32 i = 0; i < totalSamples; ++i)
+    {
+        FLOAT32 absIn = std::abs(pf32In[i]);
+        if (absIn > peakIn) peakIn = absIn;
+    }
+
+    if (m_pTelemetry && m_slotIndex >= 0 && m_slotIndex < PERMADB_SFX_MAX_SLOTS)
+    {
+        float targetLin = m_pTelemetry->slots[m_slotIndex].targetCeilingLinear;
+        uint32_t bypass = m_pTelemetry->slots[m_slotIndex].bypass;
+        uint32_t globalEnabled = m_pTelemetry->isEnabled;
+
+        if (globalEnabled == 0 || bypass != 0)
+        {
+            m_limiter.SetEnabled(false);
+        }
+        else
+        {
+            if (targetLin >= 0.001f && targetLin <= 1.0f)
+            {
+                m_limiter.SetCeilingLinear(targetLin);
+            }
+            m_limiter.SetEnabled(true);
+        }
+    }
+
+    m_limiter.Process(pf32In, pf32Out, u32Frames);
+
+    FLOAT32 peakOut = 0.0f;
+    for (UINT32 i = 0; i < totalSamples; ++i)
+    {
+        FLOAT32 absOut = std::abs(pf32Out[i]);
+        if (absOut > peakOut) peakOut = absOut;
+    }
+
+    pOut->u32ValidFrameCount = u32Frames;
+    pOut->u32BufferFlags = BUFFER_VALID;
+
+    if (m_pTelemetry && m_slotIndex >= 0 && m_slotIndex < PERMADB_SFX_MAX_SLOTS)
+    {
+        float prevIn = m_pTelemetry->slots[m_slotIndex].inputPeak;
+        float prevOut = m_pTelemetry->slots[m_slotIndex].outputPeak;
+        m_pTelemetry->slots[m_slotIndex].inputPeak = (peakIn > prevIn) ? peakIn : (prevIn * 0.90f + peakIn * 0.10f);
+        m_pTelemetry->slots[m_slotIndex].outputPeak = (peakOut > prevOut) ? peakOut : (prevOut * 0.90f + peakOut * 0.10f);
+    }
+}
+
+STDMETHODIMP CPermadBSfxApo::GetEffectsList(
+    _Outptr_result_buffer_maybenull_(*pcEffects) LPGUID* ppEffectsIds,
+    _Out_ UINT* pcEffects,
+    _In_ HANDLE Event)
+{
+    if (!ppEffectsIds || !pcEffects) return E_POINTER;
+
+    if (Event != NULL)
+    {
+        if (m_hEffectsChangedEvent != NULL)
+        {
+            CloseHandle(m_hEffectsChangedEvent);
+            m_hEffectsChangedEvent = NULL;
+        }
+        DuplicateHandle(GetCurrentProcess(), Event, GetCurrentProcess(), &m_hEffectsChangedEvent, EVENT_MODIFY_STATE, FALSE, 0);
+    }
+
+    GUID* pGuid = reinterpret_cast<GUID*>(CoTaskMemAlloc(sizeof(GUID)));
+    if (!pGuid)
+    {
+        *ppEffectsIds = nullptr;
+        *pcEffects = 0;
+        return E_OUTOFMEMORY;
+    }
+
+    *pGuid = PermadBEffectId;
+    *ppEffectsIds = pGuid;
+    *pcEffects = 1;
+    return S_OK;
+}
+
+// --------------------------------------------------------------------------
+// COM Class Factory Implementation (SFX)
+// --------------------------------------------------------------------------
+class CPermadBSfxClassFactory : public IClassFactory
+{
+private:
+    volatile LONG m_cRef;
+public:
+    CPermadBSfxClassFactory() : m_cRef(1) {}
+
+    STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override
+    {
+        if (!ppv) return E_POINTER;
+        if (riid == IID_IUnknown || riid == IID_IClassFactory)
+        {
+            *ppv = static_cast<IClassFactory*>(this);
+            AddRef();
+            return S_OK;
+        }
+        *ppv = nullptr;
+        return E_NOINTERFACE;
+    }
+
+    STDMETHODIMP_(ULONG) AddRef() override { return InterlockedIncrement(&m_cRef); }
+    STDMETHODIMP_(ULONG) Release() override
+    {
+        ULONG ul = InterlockedDecrement(&m_cRef);
+        if (ul == 0) delete this;
+        return ul;
+    }
+
+    STDMETHODIMP CreateInstance(IUnknown* pUnkOuter, REFIID riid, void** ppv) override
+    {
+        if (!ppv) return E_POINTER;
+        *ppv = nullptr;
+
+        if (pUnkOuter != nullptr && riid != IID_IUnknown)
+        {
+            return E_NOINTERFACE;
         }
 
+        CPermadBSfxApo* pApo = new (std::nothrow) CPermadBSfxApo(pUnkOuter);
+        if (!pApo) return E_OUTOFMEMORY;
+
+        HRESULT hr;
+        if (pUnkOuter != nullptr)
+        {
+            *ppv = static_cast<IUnknown*>(pApo->GetNonDelegatingUnknown());
+            hr = S_OK;
+        }
+        else
+        {
+            hr = pApo->GetNonDelegatingUnknown()->QueryInterface(riid, ppv);
+            pApo->GetNonDelegatingUnknown()->Release();
+        }
         return hr;
     }
 
@@ -561,14 +1046,24 @@ STDAPI DllGetClassObject(REFCLSID rclsid, REFIID riid, LPVOID* ppv)
     if (!ppv) return E_POINTER;
     *ppv = nullptr;
 
-    if (rclsid == CLSID_PermadBLimiterAPO)
+    if (rclsid == CLSID_PermadBLimiterAPO || rclsid == CLSID_PermadBEfxApo)
     {
         CPermadBLimiterClassFactory* pFactory = new (std::nothrow) CPermadBLimiterClassFactory();
         if (!pFactory) return E_OUTOFMEMORY;
 
         HRESULT hr = pFactory->QueryInterface(riid, ppv);
         pFactory->Release();
-        LogApo(L"DllGetClassObject returning 0x%08X", hr);
+        LogApo(L"DllGetClassObject returning EFX 0x%08X", hr);
+        return hr;
+    }
+    else if (rclsid == CLSID_PermadBSfxApo)
+    {
+        CPermadBSfxClassFactory* pFactory = new (std::nothrow) CPermadBSfxClassFactory();
+        if (!pFactory) return E_OUTOFMEMORY;
+
+        HRESULT hr = pFactory->QueryInterface(riid, ppv);
+        pFactory->Release();
+        LogApo(L"DllGetClassObject returning SFX 0x%08X", hr);
         return hr;
     }
 
@@ -607,27 +1102,20 @@ static HRESULT SetRegDword(HKEY hRoot, LPCWSTR subKey, LPCWSTR valueName, DWORD 
     return HRESULT_FROM_WIN32(lRes);
 }
 
-STDAPI DllRegisterServer()
+static HRESULT RegisterApoClsid(LPCWSTR clsidStr, LPCWSTR friendlyName, LPCWSTR szModule)
 {
-    WCHAR szModule[MAX_PATH];
-    if (GetModuleFileNameW(g_hModule, szModule, MAX_PATH) == 0)
-        return HRESULT_FROM_WIN32(GetLastError());
-
-    LPCWSTR clsidStr = L"{968ff234-1895-49f1-8b97-9d9075eb25b6}";
     WCHAR clsidKey[256];
     swprintf_s(clsidKey, L"CLSID\\%s", clsidStr);
+    SetRegKeyAndValue(HKEY_CLASSES_ROOT, clsidKey, NULL, friendlyName);
 
-    // Register CLSID
-    SetRegKeyAndValue(HKEY_CLASSES_ROOT, clsidKey, NULL, L"PermadB Limiter APO");
     WCHAR inprocKey[256];
     swprintf_s(inprocKey, L"CLSID\\%s\\InProcServer32", clsidStr);
     SetRegKeyAndValue(HKEY_CLASSES_ROOT, inprocKey, NULL, szModule);
     SetRegKeyAndValue(HKEY_CLASSES_ROOT, inprocKey, L"ThreadingModel", L"Both");
 
-    // Register AudioEngine\AudioProcessingObjects entry
     WCHAR apoKey[256];
     swprintf_s(apoKey, L"AudioEngine\\AudioProcessingObjects\\%s", clsidStr);
-    SetRegKeyAndValue(HKEY_CLASSES_ROOT, apoKey, L"FriendlyName", L"PermadB Limiter APO");
+    SetRegKeyAndValue(HKEY_CLASSES_ROOT, apoKey, L"FriendlyName", friendlyName);
     SetRegKeyAndValue(HKEY_CLASSES_ROOT, apoKey, L"Copyright", L"PermadB");
     SetRegDword(HKEY_CLASSES_ROOT, apoKey, L"MajorVersion", 1);
     SetRegDword(HKEY_CLASSES_ROOT, apoKey, L"MinorVersion", 0);
@@ -639,14 +1127,11 @@ STDAPI DllRegisterServer()
     SetRegDword(HKEY_CLASSES_ROOT, apoKey, L"MaxInstances", 0xFFFFFFFF);
     SetRegDword(HKEY_CLASSES_ROOT, apoKey, L"NumAPOInterfaces", 1);
     SetRegKeyAndValue(HKEY_CLASSES_ROOT, apoKey, L"APOInterface0", L"{FD7F2B29-24D0-4B5C-B177-592C39F9CA10}"); // IID_IAudioProcessingObject
-
-    LogApo(L"DllRegisterServer registered %s with interface FD7F2B29", szModule);
     return S_OK;
 }
 
-STDAPI DllUnregisterServer()
+static HRESULT UnregisterApoClsid(LPCWSTR clsidStr)
 {
-    LPCWSTR clsidStr = L"{968ff234-1895-49f1-8b97-9d9075eb25b6}";
     WCHAR clsidKey[256];
     swprintf_s(clsidKey, L"CLSID\\%s", clsidStr);
     RegDeleteTreeW(HKEY_CLASSES_ROOT, clsidKey);
@@ -654,6 +1139,26 @@ STDAPI DllUnregisterServer()
     WCHAR apoKey[256];
     swprintf_s(apoKey, L"AudioEngine\\AudioProcessingObjects\\%s", clsidStr);
     RegDeleteTreeW(HKEY_CLASSES_ROOT, apoKey);
+    return S_OK;
+}
+
+STDAPI DllRegisterServer()
+{
+    WCHAR szModule[MAX_PATH];
+    if (GetModuleFileNameW(g_hModule, szModule, MAX_PATH) == 0)
+        return HRESULT_FROM_WIN32(GetLastError());
+
+    RegisterApoClsid(L"{968ff234-1895-49f1-8b97-9d9075eb25b6}", L"PermadB Master Limiter EFX APO", szModule);
+    RegisterApoClsid(L"{b41e8c71-2947-4e3a-965a-06385d8204d1}", L"PermadB Stream Limiter SFX APO", szModule);
+
+    LogApo(L"DllRegisterServer registered EFX and SFX APOs for %s", szModule);
+    return S_OK;
+}
+
+STDAPI DllUnregisterServer()
+{
+    UnregisterApoClsid(L"{968ff234-1895-49f1-8b97-9d9075eb25b6}");
+    UnregisterApoClsid(L"{b41e8c71-2947-4e3a-965a-06385d8204d1}");
 
     return S_OK;
 }

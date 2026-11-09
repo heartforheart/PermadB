@@ -16,10 +16,23 @@ using PermadB.Config;
 namespace PermadB.Audio;
 
 [StructLayout(LayoutKind.Sequential, Pack = 8)]
+public struct PermadBSfxSlot
+{
+    public uint Active;               // 0 = free, 1 = claimed by active SFX instance
+    public uint InstanceId;           // Monotonic token incremented on each claim
+    public uint AudioProcessingMode;  // 0=Default, 1=Communications, 2=Media, 3=Other
+    public float InputPeak;           // Max pre-limiter linear peak observed [0..1+]
+    public float OutputPeak;          // Max post-limiter linear peak observed [0..1+]
+    public float TargetCeilingLinear; // Target linear ceiling (default 0.1585f / -16dBFS)
+    public uint Bypass;               // 0 = limit to TargetCeilingLinear, 1 = bypass SFX
+    public uint MatchedProcessId;     // ProcessId matched by C# supervisor (0 = unmatched)
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 8)]
 public struct PermadBApoTelemetry
 {
     public uint Magic;                  // "PERM" (0x5045524D)
-    public uint Version;                // 2 (Phase 2 Lookahead Limiter)
+    public uint Version;                // 3 (Dual-Stage SFX + EFX)
     public uint AudiodgPid;             // PID of audiodg.exe
     public uint SampleRate;             // e.g. 48000
     public uint ChannelCount;           // e.g. 2
@@ -41,6 +54,58 @@ public struct PermadBApoTelemetry
     public float TargetCeilingDbfs;     // Control to APO: target dBFS ceiling
     public uint IsEnabled;              // Control to APO: 1 = active, 0 = bypass
     public uint CommandSeq;             // Incremented when command changed
+    public float MasterSafetyCeilingLinear; // Upper safety cap for EFX brickwall
+    public uint SfxActiveCount;         // Number of active SFX instances
+
+    public const int SfxSlotCount = 16;
+    public PermadBSfxSlot Slot0;
+    public PermadBSfxSlot Slot1;
+    public PermadBSfxSlot Slot2;
+    public PermadBSfxSlot Slot3;
+    public PermadBSfxSlot Slot4;
+    public PermadBSfxSlot Slot5;
+    public PermadBSfxSlot Slot6;
+    public PermadBSfxSlot Slot7;
+    public PermadBSfxSlot Slot8;
+    public PermadBSfxSlot Slot9;
+    public PermadBSfxSlot Slot10;
+    public PermadBSfxSlot Slot11;
+    public PermadBSfxSlot Slot12;
+    public PermadBSfxSlot Slot13;
+    public PermadBSfxSlot Slot14;
+    public PermadBSfxSlot Slot15;
+
+    public PermadBSfxSlot GetSlot(int index) => index switch
+    {
+        0 => Slot0, 1 => Slot1, 2 => Slot2, 3 => Slot3,
+        4 => Slot4, 5 => Slot5, 6 => Slot6, 7 => Slot7,
+        8 => Slot8, 9 => Slot9, 10 => Slot10, 11 => Slot11,
+        12 => Slot12, 13 => Slot13, 14 => Slot14, 15 => Slot15,
+        _ => default
+    };
+
+    public void SetSlot(int index, PermadBSfxSlot slot)
+    {
+        switch (index)
+        {
+            case 0: Slot0 = slot; break;
+            case 1: Slot1 = slot; break;
+            case 2: Slot2 = slot; break;
+            case 3: Slot3 = slot; break;
+            case 4: Slot4 = slot; break;
+            case 5: Slot5 = slot; break;
+            case 6: Slot6 = slot; break;
+            case 7: Slot7 = slot; break;
+            case 8: Slot8 = slot; break;
+            case 9: Slot9 = slot; break;
+            case 10: Slot10 = slot; break;
+            case 11: Slot11 = slot; break;
+            case 12: Slot12 = slot; break;
+            case 13: Slot13 = slot; break;
+            case 14: Slot14 = slot; break;
+            case 15: Slot15 = slot; break;
+        }
+    }
 }
 
 public class AppSessionInfo
@@ -79,6 +144,7 @@ public class AudioMetrics
     public bool AppFilteringEnabled { get; set; } = false;
     public float Custom1PresetPercent { get; set; } = 10.0f;
     public float Custom2PresetPercent { get; set; } = 100.0f;
+    public int SfxActiveCount { get; set; }
     public Dictionary<string, bool> AppProtectionRules { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public List<AppSessionInfo> AppSessions { get; set; } = new();
 }
@@ -179,6 +245,11 @@ public class AudioEngine : IMMNotificationClient, IDisposable
     private DateTime _lastProtectedSpikeTime = DateTime.MinValue;
     private DateTime _lastBypassedAudioTime = DateTime.MinValue;
     private DateTime _lastLogTick = DateTime.MinValue;
+
+    // 50Hz Side-Channel Peak History for SFX Stream Correlation
+    private readonly Dictionary<int, Queue<float>> _sessionPeakQueues = new();
+    private readonly Queue<float>[] _slotPeakQueues = Enumerable.Range(0, 16).Select(_ => new Queue<float>()).ToArray();
+    private readonly uint[] _lastSlotInstanceId = new uint[16];
 
     // Voice communication applications where speech intelligibility must NEVER be crushed or muted
     public static readonly HashSet<string> CommunicationApps = new(StringComparer.OrdinalIgnoreCase)
@@ -742,9 +813,14 @@ public class AudioEngine : IMMNotificationClient, IDisposable
     {
         if (string.IsNullOrEmpty(deviceId)) return;
 
-        const string clsid = "{968ff234-1895-49f1-8b97-9d9075eb25b6}";
+        const string clsidEfx = "{968ff234-1895-49f1-8b97-9d9075eb25b6}";
+        const string clsidSfx = "{b41e8c71-2947-4e3a-965a-06385d8204d1}";
+
+        const string pkeySfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},5";
         const string pkeyEfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},7";
+        const string pkeyCompositeSfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},13";
         const string pkeyCompositeEfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},15";
+        const string pkeySfxModes = "{d3993a3f-99c2-4402-b5ec-a92a0367664b},5";
         const string pkeyEfxModes = "{d3993a3f-99c2-4402-b5ec-a92a0367664b},7";
 
         string cleanId = deviceId;
@@ -774,56 +850,60 @@ public class AudioEngine : IMMNotificationClient, IDisposable
             {
                 using (key)
                 {
-                    // Self-healing: restore any third-party stream effect APOs (e.g. DTS / NGENUITY) backed up by older versions
-                    try
+                    // 1. Configure SFX (Pre-Mix Stream Effect APO)
+                    var sfx = key.GetValue(pkeySfx) as string;
+                    if (!string.Equals(sfx, clsidSfx, StringComparison.OrdinalIgnoreCase))
                     {
-                        var backupComp = key.GetValue("PermadB_Backup_CompositeSFX_DTS") as string[];
-                        if (backupComp != null && backupComp.Length > 0)
-                        {
-                            const string pkeyCompositeSfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},13";
-                            key.SetValue(pkeyCompositeSfx, backupComp, RegistryValueKind.MultiString);
-                            key.DeleteValue("PermadB_Backup_CompositeSFX_DTS", false);
-                        }
+                        key.SetValue(pkeySfx, clsidSfx, RegistryValueKind.String);
                     }
-                    catch { }
 
-                    try
+                    var compSfx = key.GetValue(pkeyCompositeSfx) as string[];
+                    if (compSfx == null || !compSfx.Contains(clsidSfx, StringComparer.OrdinalIgnoreCase))
                     {
-                        var backupSfx = key.GetValue("PermadB_Backup_SFX_DTS");
-                        if (backupSfx != null)
-                        {
-                            if (backupSfx is string[] multi)
-                            {
-                                const string pkeyCompositeSfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},13";
-                                key.SetValue(pkeyCompositeSfx, multi, RegistryValueKind.MultiString);
-                            }
-                            else if (backupSfx is string s && !string.IsNullOrEmpty(s))
-                            {
-                                const string pkeySfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},5";
-                                key.SetValue(pkeySfx, s, RegistryValueKind.String);
-                            }
-                            key.DeleteValue("PermadB_Backup_SFX_DTS", false);
-                        }
+                        var newCompSfx = compSfx == null ? new[] { clsidSfx } : compSfx.Append(clsidSfx).ToArray();
+                        key.SetValue(pkeyCompositeSfx, newCompSfx, RegistryValueKind.MultiString);
                     }
-                    catch { }
 
+                    var sfxModes = key.GetValue(pkeySfxModes) as string[];
+                    var targetModes = new[]
+                    {
+                        "{C18E2F7E-933D-4965-B7D1-1EEF228D2AF3}", // Default
+                        "{98951333-B9CD-48B1-A0A3-FF40682D73F7}", // Communications
+                        "{FC1CF0A4-3860-4592-8232-A567847BE2D1}", // Speech
+                        "{47800040-4533-461B-9B4C-9E9D77B11057}"  // Media
+                    };
+
+                    if (sfxModes == null || sfxModes.Length == 0)
+                    {
+                        key.SetValue(pkeySfxModes, targetModes, RegistryValueKind.MultiString);
+                    }
+                    else if (!targetModes.All(m => sfxModes.Contains(m, StringComparer.OrdinalIgnoreCase)))
+                    {
+                        key.SetValue(pkeySfxModes, sfxModes.Union(targetModes, StringComparer.OrdinalIgnoreCase).ToArray(), RegistryValueKind.MultiString);
+                    }
+
+                    // 2. Configure EFX (Post-Mix Master Limiter APO)
                     var efx = key.GetValue(pkeyEfx) as string;
-                    if (!string.Equals(efx, clsid, StringComparison.OrdinalIgnoreCase))
+                    if (!string.Equals(efx, clsidEfx, StringComparison.OrdinalIgnoreCase))
                     {
-                        key.SetValue(pkeyEfx, clsid, RegistryValueKind.String);
+                        key.SetValue(pkeyEfx, clsidEfx, RegistryValueKind.String);
                     }
 
-                    var comp = key.GetValue(pkeyCompositeEfx) as string[];
-                    if (comp == null || !comp.Contains(clsid, StringComparer.OrdinalIgnoreCase))
+                    var compEfx = key.GetValue(pkeyCompositeEfx) as string[];
+                    if (compEfx == null || !compEfx.Contains(clsidEfx, StringComparer.OrdinalIgnoreCase))
                     {
-                        var newComp = comp == null ? new[] { clsid } : comp.Append(clsid).ToArray();
-                        key.SetValue(pkeyCompositeEfx, newComp, RegistryValueKind.MultiString);
+                        var newCompEfx = compEfx == null ? new[] { clsidEfx } : compEfx.Append(clsidEfx).ToArray();
+                        key.SetValue(pkeyCompositeEfx, newCompEfx, RegistryValueKind.MultiString);
                     }
 
-                    var modes = key.GetValue(pkeyEfxModes) as string[];
-                    if (modes == null || modes.Length == 0)
+                    var efxModes = key.GetValue(pkeyEfxModes) as string[];
+                    if (efxModes == null || efxModes.Length == 0)
                     {
-                        key.SetValue(pkeyEfxModes, new[] { "{C18E2F7E-933D-4965-B7D1-1EEF228D2AF3}" }, RegistryValueKind.MultiString);
+                        key.SetValue(pkeyEfxModes, targetModes, RegistryValueKind.MultiString);
+                    }
+                    else if (!targetModes.All(m => efxModes.Contains(m, StringComparer.OrdinalIgnoreCase)))
+                    {
+                        key.SetValue(pkeyEfxModes, efxModes.Union(targetModes, StringComparer.OrdinalIgnoreCase).ToArray(), RegistryValueKind.MultiString);
                     }
                 }
             }
@@ -907,13 +987,15 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                     int offsetDbfs = (int)Marshal.OffsetOf<PermadBApoTelemetry>(nameof(PermadBApoTelemetry.TargetCeilingDbfs));
                     int offsetEnabled = (int)Marshal.OffsetOf<PermadBApoTelemetry>(nameof(PermadBApoTelemetry.IsEnabled));
                     int offsetSeq = (int)Marshal.OffsetOf<PermadBApoTelemetry>(nameof(PermadBApoTelemetry.CommandSeq));
+                    int offsetMasterSafety = (int)Marshal.OffsetOf<PermadBApoTelemetry>(nameof(PermadBApoTelemetry.MasterSafetyCeilingLinear));
 
                     _telemetryAcc.Write(offsetMagic, (uint)0x5045524D); // "PERM"
-                    _telemetryAcc.Write(offsetVersion, (uint)2);
+                    _telemetryAcc.Write(offsetVersion, (uint)3); // Version 3: Dual-Stage SFX + EFX
                     _telemetryAcc.Write(offsetLinear, linear);
                     _telemetryAcc.Write(offsetDbfs, dbfs);
                     _telemetryAcc.Write(offsetEnabled, (uint)enabledInt);
                     _telemetryAcc.Write(offsetSeq, _apoCommandSeq);
+                    _telemetryAcc.Write(offsetMasterSafety, 0.8912509f); // -1.0 dBFS Master Acoustic Brickwall
 
                     _lastSentCeilingLinear = linear;
                     _lastSentEnabled = enabledInt;
@@ -927,6 +1009,167 @@ public class AudioEngine : IMMNotificationClient, IDisposable
         catch (Exception ex)
         {
             Console.WriteLine($"[AudioEngine] Error sending ceiling to APO: {ex.Message}");
+        }
+    }
+
+    private void CorrelateAndSyncSfxSlots(List<AppSessionInfo> activeSessions, float safeLinear)
+    {
+        if (_telemetryAcc == null) return;
+
+        try
+        {
+            // 1. Maintain sliding history of session peaks (5 ticks = 100ms)
+            var currentPids = new HashSet<int>();
+            foreach (var session in activeSessions)
+            {
+                if (session.ProcessId <= 0) continue;
+                currentPids.Add(session.ProcessId);
+                if (!_sessionPeakQueues.TryGetValue(session.ProcessId, out var queue))
+                {
+                    queue = new Queue<float>(5);
+                    _sessionPeakQueues[session.ProcessId] = queue;
+                }
+                if (queue.Count >= 5) queue.Dequeue();
+                queue.Enqueue(session.PeakValue);
+            }
+
+            // Prune dead sessions periodically
+            if (_sessionPeakQueues.Count > 30)
+            {
+                var deadPids = _sessionPeakQueues.Keys.Where(p => !currentPids.Contains(p)).ToList();
+                foreach (var dp in deadPids) _sessionPeakQueues.Remove(dp);
+            }
+
+            int slot0Offset = (int)Marshal.OffsetOf<PermadBApoTelemetry>(nameof(PermadBApoTelemetry.Slot0));
+            int slotSize = Marshal.SizeOf<PermadBSfxSlot>();
+
+            int offsetTarget = (int)Marshal.OffsetOf<PermadBSfxSlot>(nameof(PermadBSfxSlot.TargetCeilingLinear));
+            int offsetBypass = (int)Marshal.OffsetOf<PermadBSfxSlot>(nameof(PermadBSfxSlot.Bypass));
+            int offsetMatchedPid = (int)Marshal.OffsetOf<PermadBSfxSlot>(nameof(PermadBSfxSlot.MatchedProcessId));
+
+            // 2. Correlate and sync each SFX slot
+            for (int i = 0; i < 16; i++)
+            {
+                int slotOffset = slot0Offset + (i * slotSize);
+                _telemetryAcc.Read(slotOffset, out PermadBSfxSlot slot);
+
+                if (slot.Active == 0)
+                {
+                    _slotPeakQueues[i].Clear();
+                    _lastSlotInstanceId[i] = 0;
+                    continue;
+                }
+
+                if (_lastSlotInstanceId[i] != slot.InstanceId)
+                {
+                    _lastSlotInstanceId[i] = slot.InstanceId;
+                    _slotPeakQueues[i].Clear();
+                }
+
+                var slotQueue = _slotPeakQueues[i];
+                if (slotQueue.Count >= 5) slotQueue.Dequeue();
+                slotQueue.Enqueue(slot.InputPeak > 0.0001f ? slot.InputPeak : slot.OutputPeak);
+
+                uint matchedPid = slot.MatchedProcessId;
+
+                // 3. Peak correlation / fast-path match if not yet bound
+                if (matchedPid == 0 && (slot.InputPeak > 0.005f || slot.OutputPeak > 0.005f))
+                {
+                    // Fast-path: Communications mode (VoIP streams like Discord)
+                    if (slot.AudioProcessingMode == 1) // Communications
+                    {
+                        var commSession = activeSessions.FirstOrDefault(s => CommunicationApps.Contains(s.ProcessName) && s.PeakValue > 0.001f);
+                        if (commSession != null)
+                        {
+                            matchedPid = (uint)commSession.ProcessId;
+                        }
+                    }
+
+                    // Peak envelope correlation
+                    if (matchedPid == 0 && slotQueue.Count >= 3)
+                    {
+                        float[] slotHistory = slotQueue.ToArray();
+                        float bestDistance = float.MaxValue;
+                        int bestPid = 0;
+
+                        foreach (var session in activeSessions)
+                        {
+                            if (session.ProcessId <= 0) continue;
+                            if (_sessionPeakQueues.TryGetValue(session.ProcessId, out var sQueue) && sQueue.Count >= 3)
+                            {
+                                float[] sHistory = sQueue.ToArray();
+                                int count = Math.Min(slotHistory.Length, sHistory.Length);
+                                float diffSum = 0.0f;
+                                for (int k = 0; k < count; k++)
+                                {
+                                    diffSum += Math.Abs(slotHistory[slotHistory.Length - 1 - k] - sHistory[sHistory.Length - 1 - k]);
+                                }
+                                float avgDiff = diffSum / count;
+                                if (avgDiff < bestDistance && avgDiff < 0.25f)
+                                {
+                                    bestDistance = avgDiff;
+                                    bestPid = session.ProcessId;
+                                }
+                            }
+                        }
+
+                        if (bestPid > 0)
+                        {
+                            matchedPid = (uint)bestPid;
+                        }
+                    }
+
+                    if (matchedPid > 0)
+                    {
+                        _telemetryAcc.Write(slotOffset + offsetMatchedPid, matchedPid);
+                    }
+                }
+
+                // 4. Determine target ceiling and bypass for this slot
+                float streamCeiling = safeLinear;
+                uint streamBypass = 0;
+
+                if (_config.Settings.AppFilteringEnabled && matchedPid > 0)
+                {
+                    var matchedSession = activeSessions.FirstOrDefault(s => s.ProcessId == (int)matchedPid);
+                    string procName = matchedSession?.ProcessName ?? string.Empty;
+                    bool isProtected = IsAppProtected(procName);
+
+                    if (isProtected)
+                    {
+                        // Limited app (Brave, YouTube, Spotify): clamped strictly to safe preset ceiling
+                        streamCeiling = safeLinear;
+                        streamBypass = 0;
+                    }
+                    else
+                    {
+                        // Bypassed app (Discord, TeamSpeak, voice): un-limited in SFX (capped only by EFX safety brickwall)
+                        streamCeiling = 0.8912509f;
+                        streamBypass = 1;
+                    }
+                }
+                else
+                {
+                    // Default Master Mode: every stream is actively limited in its own SFX stage
+                    // completely eliminating inter-app ducking / pumping!
+                    streamCeiling = safeLinear;
+                    streamBypass = 0;
+                }
+
+                // Push updates to shared memory if changed
+                if (Math.Abs(slot.TargetCeilingLinear - streamCeiling) > 0.001f)
+                {
+                    _telemetryAcc.Write(slotOffset + offsetTarget, streamCeiling);
+                }
+                if (slot.Bypass != streamBypass)
+                {
+                    _telemetryAcc.Write(slotOffset + offsetBypass, streamBypass);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[CorrelateAndSyncSfxSlots] Warning: {ex.Message}");
         }
     }
 
@@ -1224,6 +1467,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
 
                     _cachedAppSessions = appSessionsList;
                     InternalSendCeilingToApo();
+                    CorrelateAndSyncSfxSlots(appSessionsList, GetActivePresetLinearCeiling());
 
                     var now = DateTime.UtcNow;
                     if ((now - _lastLogTick).TotalSeconds >= 3.0)
@@ -1232,7 +1476,8 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                         var summaries = appSessionsList.Select(x => $"{x.ProcessName}(v={x.VolumePercent:F0}%,pk={x.PeakValue:F2},prot={x.IsProtected},clmp={x.IsClamped})");
                         float apoDbfs = _lastSentCeilingLinear > 0.0001f ? 20.0f * (float)Math.Log10(_lastSentCeilingLinear) : -96.0f;
                         string bridgeStatus = _virtualBridge.IsActive ? $"ACTIVE(GR={_virtualBridge.CurrentGainReductionDb:F1}dB,act={_virtualBridge.LimiterActivations})" : "OFF";
-                        AppLogger.Log($"[HEARTBEAT] Mode={(_config.Settings.AppFilteringEnabled ? "AppSpecific" : "Master")}, Preset={_config.Settings.ActivePreset}({profile.SafeCeilingPercent:F0}%), Bridge={bridgeStatus}, APO={_lastSentCeilingLinear:F4}({apoDbfs:F1}dBFS), MtrPeak={meterPeak:F2}, MtrVol={volScalar:P0}, Sessions=[{string.Join(", ", summaries)}]");
+                        uint sfxCount = hasApoTelemetry ? telem.SfxActiveCount : 0;
+                        AppLogger.Log($"[HEARTBEAT] Mode={(_config.Settings.AppFilteringEnabled ? "AppSpecific" : "Master")}, Preset={_config.Settings.ActivePreset}({profile.SafeCeilingPercent:F0}%), SFX_Instances={sfxCount}, Bridge={bridgeStatus}, APO={_lastSentCeilingLinear:F4}({apoDbfs:F1}dBFS), MtrPeak={meterPeak:F2}, MtrVol={volScalar:P0}, Sessions=[{string.Join(", ", summaries)}]");
                     }
                 }
                 catch { }
@@ -1259,6 +1504,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                 AppFilteringEnabled = _config.Settings.AppFilteringEnabled,
                 Custom1PresetPercent = _config.Settings.Custom1PresetPercent,
                 Custom2PresetPercent = _config.Settings.Custom2PresetPercent,
+                SfxActiveCount = hasApoTelemetry ? (int)telem.SfxActiveCount : 0,
                 AppProtectionRules = _config.Settings.AppProtectionRules,
                 AppSessions = _cachedAppSessions
             };

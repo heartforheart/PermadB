@@ -257,11 +257,13 @@ static class Program
         }
         catch { }
 
-        // 3. Remove AudioEngine AudioProcessingObjects & CLSID registry entries
+        // 3. Remove AudioEngine AudioProcessingObjects & CLSID registry entries (EFX & SFX)
         try
         {
             Registry.LocalMachine.DeleteSubKeyTree(@"SOFTWARE\Classes\AudioEngine\AudioProcessingObjects\{968ff234-1895-49f1-8b97-9d9075eb25b6}", false);
             Registry.LocalMachine.DeleteSubKeyTree(@"SOFTWARE\Classes\CLSID\{968ff234-1895-49f1-8b97-9d9075eb25b6}", false);
+            Registry.LocalMachine.DeleteSubKeyTree(@"SOFTWARE\Classes\AudioEngine\AudioProcessingObjects\{b41e8c71-2947-4e3a-965a-06385d8204d1}", false);
+            Registry.LocalMachine.DeleteSubKeyTree(@"SOFTWARE\Classes\CLSID\{b41e8c71-2947-4e3a-965a-06385d8204d1}", false);
         }
         catch { }
 
