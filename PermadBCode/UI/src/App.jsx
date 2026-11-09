@@ -961,20 +961,20 @@ export default function App() {
                           <div style={{ fontSize: '0.7rem', color: '#64748b', display: 'flex', alignItems: 'center', gap: '6px' }}>
                             <span>PID {app.processId} {app.isMuted ? '• Muted' : ''}</span>
                             <button
-                              onClick={() => handleToggleAppProtection(app.processName, app.isProtected ?? true)}
+                              onClick={() => handleToggleAppProtection(app.processName, Boolean(app.isProtected))}
                               style={{
-                                background: (app.isProtected ?? true) ? 'rgba(16, 185, 129, 0.15)' : 'rgba(148, 163, 184, 0.15)',
-                                color: (app.isProtected ?? true) ? '#34d399' : '#94a3b8',
-                                border: (app.isProtected ?? true) ? '1px solid rgba(16, 185, 129, 0.35)' : '1px solid rgba(148, 163, 184, 0.25)',
+                                background: Boolean(app.isProtected) ? 'rgba(16, 185, 129, 0.15)' : 'rgba(148, 163, 184, 0.15)',
+                                color: Boolean(app.isProtected) ? '#34d399' : '#94a3b8',
+                                border: Boolean(app.isProtected) ? '1px solid rgba(16, 185, 129, 0.35)' : '1px solid rgba(148, 163, 184, 0.25)',
                                 borderRadius: '4px',
                                 padding: '1px 6px',
                                 fontSize: '0.68rem',
                                 fontWeight: '600',
                                 cursor: 'pointer'
                               }}
-                              title={(app.isProtected ?? true) ? "PermadB limits this app. Click to bypass." : "App is bypassed. Click to limit."}
+                              title={Boolean(app.isProtected) ? "PermadB limits this app. Click to bypass." : "App is bypassed. Click to limit."}
                             >
-                              {(app.isProtected ?? true) ? '🛡️ Limited' : '⚡ Bypassed'}
+                              {Boolean(app.isProtected) ? '🛡️ Limited' : '⚡ Bypassed'}
                             </button>
                           </div>
                         </div>

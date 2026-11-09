@@ -37,10 +37,10 @@
    `AudioEngine.cs` writes `targetCeilingLinear`, `targetCeilingDbfs`, `isEnabled`, and increments `commandSeq` in `permadb_apo_telemetry.dat`. `PermadBApo.dll` detects the sequence change in real time and updates its internal limiter threshold (`SetCeilingLinear`).
 6. **Application-Specific Limiting Protocol**:
    - Every application defaults to `Bypassed` (`false`) with zero hardcoded presets.
-   - When App-Specific Mode is enabled, the daemon monitors instantaneous session activity (`rawAppPeak > 0.005f`).
-   - If a bypassed application (e.g. Spotify, YouTube) outputs audio, the APO runs in transparent peak-limiter mode (`-1.0 dBFS` / `0.8912` linear), allowing unconstrained 100% blast without being lowered or ducked by limited apps like Discord.
-   - If only applications explicitly marked `[🛡️ LIMITED]` by the user produce audio, the daemon sets the APO ceiling to the active preset level (`linearCeiling`).
-   - **Volume Mixer Immutability**: All limiting is performed entirely in `audiodg.exe` PCM buffers; `s.SimpleAudioVolume.Volume` is never written to, keeping Windows Volume Mixer sliders completely static.
+   - When App-Specific Mode is enabled, protected applications (e.g. Discord) are bounded directly at their individual session level to the active preset safe ceiling (`profile.SafeCeilingPercent / 100.0f`).
+   - Bypassed applications (e.g. Brave, Spotify, YouTube) are completely untouched; the Master APO runs in transparent peak-limiter mode (`-1.0 dBFS` / `0.8912` linear), allowing bypassed music to blast at 100% full scale without cross-interference or ducking.
+   - In Master Mode (`AppFilteringEnabled == false`), session volumes are untouched and the Master APO enforces global lookahead limiting.
+   - Comprehensive diagnostic logging is written to `C:\Users\Public\permadb_debug.log`.
 7. **Telemetry & Client Presentation**:
    - `PermadBApo.dll` writes live input peak, output peak, gain reduction (dB), and activation counts to telemetry shared memory.
    - `AudioEngine.cs` broadcasts metrics via events to the native WinForms Dashboard (`DashboardForm.cs`), System Tray (`TrayIconManager.cs`), and SSE web stream (`ApiServer.cs` at `/api/meter`).
