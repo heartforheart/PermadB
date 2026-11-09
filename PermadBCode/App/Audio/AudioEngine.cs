@@ -841,14 +841,18 @@ public class AudioEngine : IMMNotificationClient, IDisposable
             RegistryKey? key = null;
             try
             {
-                key = Registry.LocalMachine.OpenSubKey(
-                    subPath,
-                    RegistryKeyPermissionCheck.ReadWriteSubTree,
-                    System.Security.AccessControl.RegistryRights.SetValue | System.Security.AccessControl.RegistryRights.QueryValues);
+                key = Registry.LocalMachine.OpenSubKey(subPath, true);
             }
             catch
             {
-                try { key = Registry.LocalMachine.OpenSubKey(subPath, true); } catch { }
+                try
+                {
+                    key = Registry.LocalMachine.OpenSubKey(
+                        subPath,
+                        RegistryKeyPermissionCheck.ReadWriteSubTree,
+                        System.Security.AccessControl.RegistryRights.SetValue | System.Security.AccessControl.RegistryRights.QueryValues);
+                }
+                catch { }
             }
 
             if (key != null)
@@ -872,10 +876,17 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                     var sfxModes = key.GetValue(pkeySfxModes) as string[];
                     var targetModes = new[]
                     {
-                        "{C18E2F7E-933D-4965-B7D1-1EEF228D2AF3}", // Default
-                        "{98951333-B9CD-48B1-A0A3-FF40682D73F7}", // Communications
-                        "{FC1CF0A4-3860-4592-8232-A567847BE2D1}", // Speech
-                        "{47800040-4533-461B-9B4C-9E9D77B11057}"  // Media
+                        "{C18E2F7E-933D-4965-B7D1-1EEF228D2AF3}", // DEFAULT
+                        "{9E90EA20-B493-4FD1-A1A8-7E1361A956CF}", // RAW
+                        "{98951333-B9CD-48B1-A0A3-FF40682D73F7}", // COMMUNICATIONS
+                        "{FC1CFC9B-B9D6-4CFA-B5E0-4BB2166878B2}", // SPEECH
+                        "{4780004E-7133-41D8-8C74-660DADD2C0EE}", // MEDIA
+                        "{B26FEB0D-EC94-477C-9494-D1AB8E753F6E}", // MOVIE
+                        "{9CF2A70B-F377-403B-BD6B-360863E0355C}", // NOTIFICATION
+                        "{FC1CF0A4-3860-4592-8232-A567847BE2D1}", // Speech alias
+                        "{47800040-4533-461B-9B4C-9E9D77B11057}", // Media alias
+                        "{B26FEDB9-886C-430B-8018-CB5467E9FC0E}", // Movie alias
+                        "{00000000-0000-0000-0000-000000000000}"  // Wildcard
                     };
 
                     if (sfxModes == null || sfxModes.Length == 0)

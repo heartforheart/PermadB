@@ -3,9 +3,11 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text.RegularExpressions;
+using System.Threading;
 using Microsoft.Win32;
 
 namespace PermadB.Installer;
@@ -229,8 +231,180 @@ public static class InstallerEngine
         }
     }
 
+    #region Win32 Security & Registry Privileges
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool OpenProcessToken(IntPtr ProcessHandle, uint DesiredAccess, out IntPtr TokenHandle);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool LookupPrivilegeValue(string? lpSystemName, string lpName, out LUID lpLuid);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool AdjustTokenPrivileges(
+        IntPtr TokenHandle,
+        [MarshalAs(UnmanagedType.Bool)] bool DisableAllPrivileges,
+        ref TOKEN_PRIVILEGES NewState,
+        uint BufferLength,
+        IntPtr PreviousState,
+        IntPtr ReturnLength);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CloseHandle(IntPtr hObject);
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern uint SetNamedSecurityInfo(
+        string pObjectName,
+        int ObjectType,
+        int SecurityInfo,
+        IntPtr psidOwner,
+        IntPtr psidGroup,
+        IntPtr pDacl,
+        IntPtr pSacl);
+
+    private const int SE_REGISTRY_KEY = 4;
+    private const int OWNER_SECURITY_INFORMATION = 1;
+    private const uint TOKEN_ADJUST_PRIVILEGES = 0x0020;
+    private const uint TOKEN_QUERY = 0x0008;
+    private const uint SE_PRIVILEGE_ENABLED = 0x00000002;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID
+    {
+        public uint LowPart;
+        public int HighPart;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID_AND_ATTRIBUTES
+    {
+        public LUID Luid;
+        public uint Attributes;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TOKEN_PRIVILEGES
+    {
+        public uint PrivilegeCount;
+        public LUID_AND_ATTRIBUTES Privilege1;
+    }
+
+    private static void EnableTokenPrivileges()
+    {
+        try
+        {
+            if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, out IntPtr hToken))
+                return;
+
+            try
+            {
+                string[] privs = {
+                    "SeTakeOwnershipPrivilege",
+                    "SeRestorePrivilege",
+                    "SeBackupPrivilege",
+                    "SeSecurityPrivilege"
+                };
+
+                foreach (var priv in privs)
+                {
+                    if (LookupPrivilegeValue(null, priv, out LUID luid))
+                    {
+                        var tp = new TOKEN_PRIVILEGES
+                        {
+                            PrivilegeCount = 1,
+                            Privilege1 = new LUID_AND_ATTRIBUTES
+                            {
+                                Luid = luid,
+                                Attributes = SE_PRIVILEGE_ENABLED
+                            }
+                        };
+                        AdjustTokenPrivileges(hToken, false, ref tp, 0, IntPtr.Zero, IntPtr.Zero);
+                    }
+                }
+            }
+            finally
+            {
+                CloseHandle(hToken);
+            }
+        }
+        catch { }
+    }
+
+    private static void TakeOwnershipAndGrantFullControl(string subKeyPath)
+    {
+        string machinePath = @"MACHINE\" + subKeyPath.TrimStart('\\');
+
+        try
+        {
+            var adminSid = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+            byte[] adminSidBytes = new byte[adminSid.BinaryLength];
+            adminSid.GetBinaryForm(adminSidBytes, 0);
+
+            IntPtr pSid = Marshal.AllocHGlobal(adminSidBytes.Length);
+            try
+            {
+                Marshal.Copy(adminSidBytes, 0, pSid, adminSidBytes.Length);
+                SetNamedSecurityInfo(
+                    machinePath,
+                    SE_REGISTRY_KEY,
+                    OWNER_SECURITY_INFORMATION,
+                    pSid,
+                    IntPtr.Zero,
+                    IntPtr.Zero,
+                    IntPtr.Zero);
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(pSid);
+            }
+        }
+        catch { }
+
+        try
+        {
+            using var key = Registry.LocalMachine.OpenSubKey(
+                subKeyPath,
+                RegistryKeyPermissionCheck.ReadWriteSubTree,
+                RegistryRights.ChangePermissions | RegistryRights.ReadKey);
+
+            if (key != null)
+            {
+                var acl = key.GetAccessControl();
+                var adminSid = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+                var usersSid = new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null);
+
+                acl.SetOwner(adminSid);
+                acl.AddAccessRule(new RegistryAccessRule(
+                    adminSid,
+                    RegistryRights.FullControl,
+                    InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+                    PropagationFlags.None,
+                    AccessControlType.Allow));
+                acl.AddAccessRule(new RegistryAccessRule(
+                    usersSid,
+                    RegistryRights.FullControl,
+                    InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+                    PropagationFlags.None,
+                    AccessControlType.Allow));
+
+                key.SetAccessControl(acl);
+            }
+        }
+        catch { }
+    }
+
+    #endregion
+
     private static void ConfigureEndpointFxProperties()
     {
+        EnableTokenPrivileges();
+
         const string clsidEfx = "{968ff234-1895-49f1-8b97-9d9075eb25b6}";
         const string clsidSfx = "{b41e8c71-2947-4e3a-965a-06385d8204d1}";
 
@@ -241,30 +415,27 @@ public static class InstallerEngine
         const string pkeySfxModes = "{d3993a3f-99c2-4402-b5ec-a92a0367664b},5";
         const string pkeyEfxModes = "{d3993a3f-99c2-4402-b5ec-a92a0367664b},7";
 
+        var targetModes = new[]
+        {
+            "{C18E2F7E-933D-4965-B7D1-1EEF228D2AF3}", // DEFAULT
+            "{9E90EA20-B493-4FD1-A1A8-7E1361A956CF}", // RAW
+            "{98951333-B9CD-48B1-A0A3-FF40682D73F7}", // COMMUNICATIONS
+            "{FC1CFC9B-B9D6-4CFA-B5E0-4BB2166878B2}", // SPEECH
+            "{4780004E-7133-41D8-8C74-660DADD2C0EE}", // MEDIA
+            "{B26FEB0D-EC94-477C-9494-D1AB8E753F6E}", // MOVIE
+            "{9CF2A70B-F377-403B-BD6B-360863E0355C}", // NOTIFICATION
+            "{FC1CF0A4-3860-4592-8232-A567847BE2D1}", // Speech alias
+            "{47800040-4533-461B-9B4C-9E9D77B11057}", // Media alias
+            "{B26FEDB9-886C-430B-8018-CB5467E9FC0E}", // Movie alias
+            "{00000000-0000-0000-0000-000000000000}"  // Wildcard
+        };
+
+        const string renderBasePath = @"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render";
+        TakeOwnershipAndGrantFullControl(renderBasePath);
+
         try
         {
-            // 1. Grant BUILTIN\Users permission to create/set keys in MMDevices\Audio\Render
-            // so PermadB can dynamically bind new audio devices at runtime without UAC prompts
-            try
-            {
-                using var renderAclKey = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render",
-                    RegistryKeyPermissionCheck.ReadWriteSubTree, RegistryRights.ChangePermissions | RegistryRights.ReadKey | RegistryRights.SetValue);
-                if (renderAclKey != null)
-                {
-                    var acl = renderAclKey.GetAccessControl();
-                    var rule = new RegistryAccessRule(
-                        new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null),
-                        RegistryRights.SetValue | RegistryRights.CreateSubKey | RegistryRights.QueryValues | RegistryRights.ReadKey,
-                        InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
-                        PropagationFlags.None,
-                        AccessControlType.Allow);
-                    acl.AddAccessRule(rule);
-                    renderAclKey.SetAccessControl(acl);
-                }
-            }
-            catch { }
-
-            using var renderKey = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render");
+            using var renderKey = Registry.LocalMachine.OpenSubKey(renderBasePath);
             if (renderKey == null) return;
 
             var subKeyNames = renderKey.GetSubKeyNames();
@@ -272,16 +443,20 @@ public static class InstallerEngine
             {
                 try
                 {
-                    var fxSubPath = $@"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render\{deviceId}\FxProperties";
+                    var devKeyPath = $@"{renderBasePath}\{deviceId}";
+                    var fxSubPath = $@"{devKeyPath}\FxProperties";
+
+                    TakeOwnershipAndGrantFullControl(devKeyPath);
+
+                    // Ensure FxProperties subkey exists
                     RegistryKey? fxKey = null;
                     try
                     {
-                        fxKey = Registry.LocalMachine.OpenSubKey(
-                            fxSubPath,
-                            RegistryKeyPermissionCheck.ReadWriteSubTree,
-                            RegistryRights.SetValue | RegistryRights.QueryValues);
+                        fxKey = Registry.LocalMachine.OpenSubKey(fxSubPath, true);
                     }
-                    catch
+                    catch { }
+
+                    if (fxKey == null)
                     {
                         try
                         {
@@ -290,143 +465,144 @@ public static class InstallerEngine
                         catch { }
                     }
 
+                    // Grant ownership & full control on FxProperties subkey itself
+                    TakeOwnershipAndGrantFullControl(fxSubPath);
+
+                    if (fxKey == null)
+                    {
+                        try
+                        {
+                            fxKey = Registry.LocalMachine.OpenSubKey(fxSubPath, true);
+                        }
+                        catch { }
+                    }
+
                     if (fxKey != null)
                     {
                         using (fxKey)
+                        {
+                            // 0. Self-healing: restore third-party SFX/EFX if backed up
+                            try
                             {
-                                // 0. Self-healing: restore any third-party stream effect APOs (e.g. DTS / NGENUITY) backed up by older versions
-                                try
+                                var backupComp = fxKey.GetValue("PermadB_Backup_CompositeSFX_DTS") as string[];
+                                if (backupComp != null && backupComp.Length > 0)
                                 {
-                                    var backupComp = fxKey.GetValue("PermadB_Backup_CompositeSFX_DTS") as string[];
-                                    if (backupComp != null && backupComp.Length > 0)
-                                    {
-                                        const string pkeyCompSfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},13";
-                                        fxKey.SetValue(pkeyCompSfx, backupComp, RegistryValueKind.MultiString);
-                                        fxKey.DeleteValue("PermadB_Backup_CompositeSFX_DTS", false);
-                                    }
+                                    fxKey.SetValue(pkeyCompositeSfx, backupComp, RegistryValueKind.MultiString);
+                                    fxKey.DeleteValue("PermadB_Backup_CompositeSFX_DTS", false);
                                 }
-                                catch { }
-
-                                try
-                                {
-                                    var backupSfx = fxKey.GetValue("PermadB_Backup_SFX_DTS");
-                                    if (backupSfx != null)
-                                    {
-                                        if (backupSfx is string[] multi)
-                                        {
-                                            const string pkeyCompSfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},13";
-                                            fxKey.SetValue(pkeyCompSfx, multi, RegistryValueKind.MultiString);
-                                        }
-                                        else if (backupSfx is string s && !string.IsNullOrEmpty(s))
-                                        {
-                                            const string pkeySingleSfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},5";
-                                            fxKey.SetValue(pkeySingleSfx, s, RegistryValueKind.String);
-                                        }
-                                        fxKey.DeleteValue("PermadB_Backup_SFX_DTS", false);
-                                    }
-                                }
-                                catch { }
-
-                                // 1. Configure SFX (Pre-Mix Stream Effect)
-                                var existingSfx = fxKey.GetValue(pkeySfx) as string;
-                                if (!string.IsNullOrEmpty(existingSfx) && !string.Equals(existingSfx, clsidSfx, StringComparison.OrdinalIgnoreCase))
-                                {
-                                    if (fxKey.GetValue("PermadB_Backup_SFX") == null)
-                                    {
-                                        fxKey.SetValue("PermadB_Backup_SFX", existingSfx, RegistryValueKind.String);
-                                    }
-                                }
-                                fxKey.SetValue(pkeySfx, clsidSfx, RegistryValueKind.String);
-
-                                var existingCompSfx = fxKey.GetValue(pkeyCompositeSfx) as string[];
-                                if (existingCompSfx != null && existingCompSfx.Length > 0)
-                                {
-                                    if (!existingCompSfx.Any(s => string.Equals(s, clsidSfx, StringComparison.OrdinalIgnoreCase)))
-                                    {
-                                        if (fxKey.GetValue("PermadB_Backup_CompositeSFX") == null)
-                                        {
-                                            fxKey.SetValue("PermadB_Backup_CompositeSFX", existingCompSfx, RegistryValueKind.MultiString);
-                                        }
-                                        var newCompSfx = existingCompSfx.Append(clsidSfx).ToArray();
-                                        fxKey.SetValue(pkeyCompositeSfx, newCompSfx, RegistryValueKind.MultiString);
-                                    }
-                                }
-                                else
-                                {
-                                    fxKey.SetValue("PermadB_Created_CompositeSFX", 1, RegistryValueKind.DWord);
-                                    fxKey.SetValue(pkeyCompositeSfx, new string[] { clsidSfx }, RegistryValueKind.MultiString);
-                                }
-
-                                // 2. Configure EFX (Post-Mix Endpoint Effect)
-                                var existingEfx = fxKey.GetValue(pkeyEfx) as string;
-                                if (!string.IsNullOrEmpty(existingEfx) && !string.Equals(existingEfx, clsidEfx, StringComparison.OrdinalIgnoreCase))
-                                {
-                                    if (fxKey.GetValue("PermadB_Backup_EFX") == null)
-                                    {
-                                        fxKey.SetValue("PermadB_Backup_EFX", existingEfx, RegistryValueKind.String);
-                                    }
-                                }
-                                fxKey.SetValue(pkeyEfx, clsidEfx, RegistryValueKind.String);
-
-                                // 3. Configure CompositeEFX
-                                var existingComp = fxKey.GetValue(pkeyCompositeEfx) as string[];
-                                if (existingComp != null && existingComp.Length > 0)
-                                {
-                                    if (!existingComp.Any(s => string.Equals(s, clsidEfx, StringComparison.OrdinalIgnoreCase)))
-                                    {
-                                        if (fxKey.GetValue("PermadB_Backup_CompositeEFX") == null)
-                                        {
-                                            fxKey.SetValue("PermadB_Backup_CompositeEFX", existingComp, RegistryValueKind.MultiString);
-                                        }
-                                        var newComp = existingComp.Append(clsidEfx).ToArray();
-                                        fxKey.SetValue(pkeyCompositeEfx, newComp, RegistryValueKind.MultiString);
-                                    }
-                                }
-                                else
-                                {
-                                    fxKey.SetValue("PermadB_Created_CompositeEFX", 1, RegistryValueKind.DWord);
-                                    fxKey.SetValue(pkeyCompositeEfx, new string[] { clsidEfx }, RegistryValueKind.MultiString);
-                                }
-
-                                // 4. Configure Processing Modes for SFX and EFX
-                                var targetModes = new[]
-                                {
-                                    "{C18E2F7E-933D-4965-B7D1-1EEF228D2AF3}", // Default
-                                    "{98951333-B9CD-48B1-A0A3-FF40682D73F7}", // Communications
-                                    "{FC1CF0A4-3860-4592-8232-A567847BE2D1}", // Speech
-                                    "{47800040-4533-461B-9B4C-9E9D77B11057}"  // Media
-                                };
-
-                                var existingSfxModes = fxKey.GetValue(pkeySfxModes) as string[];
-                                if (existingSfxModes != null && existingSfxModes.Length > 0)
-                                {
-                                    var mergedSfxModes = existingSfxModes.Union(targetModes, StringComparer.OrdinalIgnoreCase).ToArray();
-                                    fxKey.SetValue(pkeySfxModes, mergedSfxModes, RegistryValueKind.MultiString);
-                                }
-                                else
-                                {
-                                    fxKey.SetValue(pkeySfxModes, targetModes, RegistryValueKind.MultiString);
-                                }
-
-                                var existingEfxModes = fxKey.GetValue(pkeyEfxModes) as string[];
-                                if (existingEfxModes != null && existingEfxModes.Length > 0)
-                                {
-                                    if (fxKey.GetValue("PermadB_Backup_EFXModes") == null)
-                                    {
-                                        fxKey.SetValue("PermadB_Backup_EFXModes", existingEfxModes, RegistryValueKind.MultiString);
-                                    }
-                                    var mergedModes = existingEfxModes.Union(targetModes, StringComparer.OrdinalIgnoreCase).ToArray();
-                                    fxKey.SetValue(pkeyEfxModes, mergedModes, RegistryValueKind.MultiString);
-                                }
-                                else
-                                {
-                                    fxKey.SetValue("PermadB_Created_EFXModes", 1, RegistryValueKind.DWord);
-                                    fxKey.SetValue(pkeyEfxModes, targetModes, RegistryValueKind.MultiString);
-                                }
-
-                                fxKey.SetValue("PermadB_Installed_DeviceId", deviceId, RegistryValueKind.String);
                             }
+                            catch { }
+
+                            try
+                            {
+                                var backupSfx = fxKey.GetValue("PermadB_Backup_SFX_DTS");
+                                if (backupSfx != null)
+                                {
+                                    if (backupSfx is string[] multi)
+                                    {
+                                        fxKey.SetValue(pkeyCompositeSfx, multi, RegistryValueKind.MultiString);
+                                    }
+                                    else if (backupSfx is string s && !string.IsNullOrEmpty(s))
+                                    {
+                                        fxKey.SetValue(pkeySfx, s, RegistryValueKind.String);
+                                    }
+                                    fxKey.DeleteValue("PermadB_Backup_SFX_DTS", false);
+                                }
+                            }
+                            catch { }
+
+                            // 1. Configure SFX (Pre-Mix Stream Effect)
+                            var existingSfx = fxKey.GetValue(pkeySfx) as string;
+                            if (!string.IsNullOrEmpty(existingSfx) && !string.Equals(existingSfx, clsidSfx, StringComparison.OrdinalIgnoreCase))
+                            {
+                                if (fxKey.GetValue("PermadB_Backup_SFX") == null)
+                                {
+                                    fxKey.SetValue("PermadB_Backup_SFX", existingSfx, RegistryValueKind.String);
+                                }
+                            }
+                            fxKey.SetValue(pkeySfx, clsidSfx, RegistryValueKind.String);
+
+                            var existingCompSfx = fxKey.GetValue(pkeyCompositeSfx) as string[];
+                            if (existingCompSfx != null && existingCompSfx.Length > 0)
+                            {
+                                if (!existingCompSfx.Any(s => string.Equals(s, clsidSfx, StringComparison.OrdinalIgnoreCase)))
+                                {
+                                    if (fxKey.GetValue("PermadB_Backup_CompositeSFX") == null)
+                                    {
+                                        fxKey.SetValue("PermadB_Backup_CompositeSFX", existingCompSfx, RegistryValueKind.MultiString);
+                                    }
+                                    var newCompSfx = existingCompSfx.Append(clsidSfx).ToArray();
+                                    fxKey.SetValue(pkeyCompositeSfx, newCompSfx, RegistryValueKind.MultiString);
+                                }
+                            }
+                            else
+                            {
+                                fxKey.SetValue("PermadB_Created_CompositeSFX", 1, RegistryValueKind.DWord);
+                                fxKey.SetValue(pkeyCompositeSfx, new string[] { clsidSfx }, RegistryValueKind.MultiString);
+                            }
+
+                            // 2. Configure EFX (Post-Mix Endpoint Effect)
+                            var existingEfx = fxKey.GetValue(pkeyEfx) as string;
+                            if (!string.IsNullOrEmpty(existingEfx) && !string.Equals(existingEfx, clsidEfx, StringComparison.OrdinalIgnoreCase))
+                            {
+                                if (fxKey.GetValue("PermadB_Backup_EFX") == null)
+                                {
+                                    fxKey.SetValue("PermadB_Backup_EFX", existingEfx, RegistryValueKind.String);
+                                }
+                            }
+                            fxKey.SetValue(pkeyEfx, clsidEfx, RegistryValueKind.String);
+
+                            // 3. Configure CompositeEFX
+                            var existingComp = fxKey.GetValue(pkeyCompositeEfx) as string[];
+                            if (existingComp != null && existingComp.Length > 0)
+                            {
+                                if (!existingComp.Any(s => string.Equals(s, clsidEfx, StringComparison.OrdinalIgnoreCase)))
+                                {
+                                    if (fxKey.GetValue("PermadB_Backup_CompositeEFX") == null)
+                                    {
+                                        fxKey.SetValue("PermadB_Backup_CompositeEFX", existingComp, RegistryValueKind.MultiString);
+                                    }
+                                    var newComp = existingComp.Append(clsidEfx).ToArray();
+                                    fxKey.SetValue(pkeyCompositeEfx, newComp, RegistryValueKind.MultiString);
+                                }
+                            }
+                            else
+                            {
+                                fxKey.SetValue("PermadB_Created_CompositeEFX", 1, RegistryValueKind.DWord);
+                                fxKey.SetValue(pkeyCompositeEfx, new string[] { clsidEfx }, RegistryValueKind.MultiString);
+                            }
+
+                            // 4. Configure Processing Modes for SFX and EFX
+                            var existingSfxModes = fxKey.GetValue(pkeySfxModes) as string[];
+                            if (existingSfxModes != null && existingSfxModes.Length > 0)
+                            {
+                                var mergedSfxModes = existingSfxModes.Union(targetModes, StringComparer.OrdinalIgnoreCase).ToArray();
+                                fxKey.SetValue(pkeySfxModes, mergedSfxModes, RegistryValueKind.MultiString);
+                            }
+                            else
+                            {
+                                fxKey.SetValue(pkeySfxModes, targetModes, RegistryValueKind.MultiString);
+                            }
+
+                            var existingEfxModes = fxKey.GetValue(pkeyEfxModes) as string[];
+                            if (existingEfxModes != null && existingEfxModes.Length > 0)
+                            {
+                                if (fxKey.GetValue("PermadB_Backup_EFXModes") == null)
+                                {
+                                    fxKey.SetValue("PermadB_Backup_EFXModes", existingEfxModes, RegistryValueKind.MultiString);
+                                }
+                                var mergedModes = existingEfxModes.Union(targetModes, StringComparer.OrdinalIgnoreCase).ToArray();
+                                fxKey.SetValue(pkeyEfxModes, mergedModes, RegistryValueKind.MultiString);
+                            }
+                            else
+                            {
+                                fxKey.SetValue("PermadB_Created_EFXModes", 1, RegistryValueKind.DWord);
+                                fxKey.SetValue(pkeyEfxModes, targetModes, RegistryValueKind.MultiString);
+                            }
+
+                            fxKey.SetValue("PermadB_Installed_DeviceId", deviceId, RegistryValueKind.String);
                         }
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -444,27 +620,28 @@ public static class InstallerEngine
     {
         try
         {
-            // Terminate any audiodg.exe so that audio engine reloads APO on next playback
+            // 1. Terminate all audiodg.exe instances so Windows releases the APO dll
             foreach (var p in Process.GetProcessesByName("audiodg"))
             {
-                try
-                {
-                    p.Kill();
-                    p.WaitForExit(2000);
-                }
-                catch { }
+                try { p.Kill(); p.WaitForExit(2000); } catch { }
             }
 
-            // Restart audiosrv service
+            // 2. Restart audiosrv service cleanly and synchronously via cmd net commands
             var psi = new ProcessStartInfo
             {
-                FileName = "powershell.exe",
-                Arguments = "-NoProfile -ExecutionPolicy Bypass -Command \"Restart-Service -Name audiosrv -Force\"",
+                FileName = "cmd.exe",
+                Arguments = "/c \"net stop audiosrv /y & net start AudioEndpointBuilder & net start audiosrv\"",
                 CreateNoWindow = true,
                 UseShellExecute = false
             };
             var proc = Process.Start(psi);
             proc?.WaitForExit(10000);
+
+            // 3. One more check for any lingering audiodg
+            foreach (var p in Process.GetProcessesByName("audiodg"))
+            {
+                try { p.Kill(); p.WaitForExit(1000); } catch { }
+            }
         }
         catch (Exception ex)
         {
@@ -474,14 +651,21 @@ public static class InstallerEngine
 
     private static void KillExistingProcesses()
     {
-        foreach (var proc in Process.GetProcessesByName("PermadB"))
+        string[] processNames = { "PermadB", "PermadB-Uninstaller", "PermadB-Installer" };
+        int currentPid = Environment.ProcessId;
+
+        foreach (var name in processNames)
         {
-            try
+            foreach (var proc in Process.GetProcessesByName(name))
             {
-                proc.Kill();
-                proc.WaitForExit(3000);
+                if (proc.Id == currentPid) continue;
+                try
+                {
+                    proc.Kill();
+                    proc.WaitForExit(3000);
+                }
+                catch { }
             }
-            catch { }
         }
 
         foreach (var proc in Process.GetProcessesByName("audiodg"))
@@ -493,6 +677,8 @@ public static class InstallerEngine
             }
             catch { }
         }
+
+        Thread.Sleep(200);
     }
 
     private static void ExtractPayload(string destinationDir)

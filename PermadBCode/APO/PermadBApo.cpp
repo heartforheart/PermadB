@@ -542,13 +542,22 @@ public:
 // --------------------------------------------------------------------------
 // CPermadBSfxApo Implementation (Stage 1: Pre-Mix Per-Stream Limiter)
 // --------------------------------------------------------------------------
+// Canonical Windows SDK ksmedia.h GUIDs + aliases
+static const GUID PermadB_MODE_DEFAULT =
+    { 0xc18e2f7e, 0x933d, 0x4965, { 0xb7, 0xd1, 0x1e, 0xef, 0x22, 0x8d, 0x2a, 0xf3 } };
 static const GUID PermadB_MODE_COMMUNICATIONS =
     { 0x98951333, 0xb9cd, 0x48b1, { 0xa0, 0xa3, 0xff, 0x40, 0x68, 0x2d, 0x73, 0xf7 } };
 static const GUID PermadB_MODE_SPEECH =
+    { 0xfc1cfc9b, 0xb9d6, 0x4cfa, { 0xb5, 0xe0, 0x4b, 0xb2, 0x16, 0x68, 0x78, 0xb2 } };
+static const GUID PermadB_MODE_SPEECH_ALT =
     { 0xfc1cf0a4, 0x3860, 0x4592, { 0x82, 0x32, 0xa5, 0x67, 0x84, 0x7b, 0xe2, 0xd1 } };
 static const GUID PermadB_MODE_MEDIA =
+    { 0x4780004e, 0x7133, 0x41d8, { 0x8c, 0x74, 0x66, 0x0d, 0xad, 0xd2, 0xc0, 0xee } };
+static const GUID PermadB_MODE_MEDIA_ALT =
     { 0x47800040, 0x4533, 0x461b, { 0x9b, 0x4c, 0x9e, 0x9d, 0x77, 0xb1, 0x10, 0x57 } };
 static const GUID PermadB_MODE_MOVIE =
+    { 0xb26feb0d, 0xec94, 0x477c, { 0x94, 0x94, 0xd1, 0xab, 0x8e, 0x75, 0x3f, 0x6e } };
+static const GUID PermadB_MODE_MOVIE_ALT =
     { 0xb26fedb9, 0x886c, 0x430b, { 0x80, 0x18, 0xcb, 0x54, 0x67, 0xe9, 0xfc, 0x0e } };
 
 CPermadBSfxApo::CPermadBSfxApo(IUnknown* pUnkOuter) :
@@ -658,7 +667,8 @@ int CPermadBSfxApo::ClaimSlot(UINT32 mode)
                 safeCeiling = m_pTelemetry->targetCeilingLinear;
             }
             m_pTelemetry->slots[i].targetCeilingLinear = safeCeiling;
-            m_pTelemetry->slots[i].bypass = 0;
+            // Communication streams (Discord/Teams/Slack) default immediately to bypassed (100% nominal volume, zero limiting)
+            m_pTelemetry->slots[i].bypass = (mode == PermadBMode_Communications) ? 1 : 0;
             m_pTelemetry->slots[i].matchedProcessId = 0;
 
             InterlockedIncrement(reinterpret_cast<volatile LONG*>(&m_pTelemetry->sfxActiveCount));
@@ -772,12 +782,15 @@ STDMETHODIMP CPermadBSfxApo::Initialize(UINT32 cbDataSize, BYTE* pbyData)
             APOInitSystemEffects2* pInit2 = reinterpret_cast<APOInitSystemEffects2*>(pbyData);
             GUID m = pInit2->AudioProcessingMode;
             if (IsEqualGUID(m, PermadB_MODE_COMMUNICATIONS) ||
-                IsEqualGUID(m, PermadB_MODE_SPEECH))
+                IsEqualGUID(m, PermadB_MODE_SPEECH) ||
+                IsEqualGUID(m, PermadB_MODE_SPEECH_ALT))
             {
                 mode = PermadBMode_Communications;
             }
             else if (IsEqualGUID(m, PermadB_MODE_MEDIA) ||
-                     IsEqualGUID(m, PermadB_MODE_MOVIE))
+                     IsEqualGUID(m, PermadB_MODE_MEDIA_ALT) ||
+                     IsEqualGUID(m, PermadB_MODE_MOVIE) ||
+                     IsEqualGUID(m, PermadB_MODE_MOVIE_ALT))
             {
                 mode = PermadBMode_Media;
             }

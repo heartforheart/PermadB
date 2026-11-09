@@ -230,6 +230,61 @@ static class Program
                                     fxKey.DeleteValue("PermadB_Created_EFXModes", false);
                                 }
 
+                                // 4. Restore SFX (Pre-Mix Stream Effect)
+                                const string clsidSfx = "{b41e8c71-2947-4e3a-965a-06385d8204d1}";
+                                const string pkeySfxModes = "{d3993a3f-99c2-4402-b5ec-a92a0367664b},5";
+
+                                var currentSfx = fxKey.GetValue(pkeySfx) as string;
+                                if (string.Equals(currentSfx, clsidSfx, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    var backupSfxVal = fxKey.GetValue("PermadB_Backup_SFX") as string;
+                                    if (!string.IsNullOrEmpty(backupSfxVal))
+                                    {
+                                        fxKey.SetValue(pkeySfx, backupSfxVal, RegistryValueKind.String);
+                                        fxKey.DeleteValue("PermadB_Backup_SFX", false);
+                                    }
+                                    else
+                                    {
+                                        fxKey.DeleteValue(pkeySfx, false);
+                                    }
+                                }
+
+                                var currentCompSfx = fxKey.GetValue(pkeyCompositeSfx) as string[];
+                                if (currentCompSfx != null && currentCompSfx.Any(s => string.Equals(s, clsidSfx, StringComparison.OrdinalIgnoreCase)))
+                                {
+                                    var backupCompSfxVal = fxKey.GetValue("PermadB_Backup_CompositeSFX") as string[];
+                                    if (backupCompSfxVal != null && backupCompSfxVal.Length > 0)
+                                    {
+                                        fxKey.SetValue(pkeyCompositeSfx, backupCompSfxVal, RegistryValueKind.MultiString);
+                                        fxKey.DeleteValue("PermadB_Backup_CompositeSFX", false);
+                                    }
+                                    else
+                                    {
+                                        var remSfx = currentCompSfx.Where(s => !string.Equals(s, clsidSfx, StringComparison.OrdinalIgnoreCase)).ToArray();
+                                        if (remSfx.Length > 0)
+                                        {
+                                            fxKey.SetValue(pkeyCompositeSfx, remSfx, RegistryValueKind.MultiString);
+                                        }
+                                        else
+                                        {
+                                            fxKey.DeleteValue(pkeyCompositeSfx, false);
+                                        }
+                                    }
+                                }
+                                fxKey.DeleteValue("PermadB_Created_CompositeSFX", false);
+
+                                var backupSfxModes = fxKey.GetValue("PermadB_Backup_SFXModes") as string[];
+                                if (backupSfxModes != null && backupSfxModes.Length > 0)
+                                {
+                                    fxKey.SetValue(pkeySfxModes, backupSfxModes, RegistryValueKind.MultiString);
+                                    fxKey.DeleteValue("PermadB_Backup_SFXModes", false);
+                                }
+                                else if (fxKey.GetValue("PermadB_Created_SFXModes") != null)
+                                {
+                                    fxKey.DeleteValue(pkeySfxModes, false);
+                                    fxKey.DeleteValue("PermadB_Created_SFXModes", false);
+                                }
+
                                 fxKey.DeleteValue("PermadB_Installed_DeviceId", false);
                             }
                         }
