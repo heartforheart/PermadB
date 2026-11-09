@@ -1198,13 +1198,14 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                         }
                     }
 
-                    // Peak envelope correlation using minimum L1 distance over 3 ticks
+                    float currentSlotPeak = slot.InputPeak > 0.0001f ? slot.InputPeak : slot.OutputPeak;
+                    float bestDistance = float.MaxValue;
+                    int bestPid = 0;
+
+                    // Peak envelope correlation using minimum L1 distance over history
                     if (matchedPid == 0 && slotQueue.Count >= 3)
                     {
                         float[] slotHistory = slotQueue.ToArray();
-                        float bestDistance = float.MaxValue;
-                        int bestPid = 0;
-
                         foreach (var session in activeSessions)
                         {
                             if (session.ProcessId <= 0) continue;
@@ -1218,18 +1219,32 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                                     diffSum += Math.Abs(slotHistory[slotHistory.Length - 1 - k] - sHistory[sHistory.Length - 1 - k]);
                                 }
                                 float avgDiff = diffSum / count;
-                                if (avgDiff < bestDistance && avgDiff < 0.35f)
+                                if (avgDiff < bestDistance)
                                 {
                                     bestDistance = avgDiff;
                                     bestPid = session.ProcessId;
                                 }
                             }
                         }
+                    }
 
-                        if (bestPid > 0)
+                    // Fallback: instant single-tick absolute peak distance so no slot is left unmatched
+                    if (matchedPid == 0 && bestPid == 0 && sessionsWithAudio.Count > 0)
+                    {
+                        foreach (var session in sessionsWithAudio)
                         {
-                            matchedPid = (uint)bestPid;
+                            float diff = Math.Abs(currentSlotPeak - session.PeakValue);
+                            if (diff < bestDistance)
+                            {
+                                bestDistance = diff;
+                                bestPid = session.ProcessId;
+                            }
                         }
+                    }
+
+                    if (bestPid > 0)
+                    {
+                        matchedPid = (uint)bestPid;
                     }
 
                     if (matchedPid > 0)
@@ -1248,6 +1263,15 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                     {
                         var matchedSession = activeSessions.FirstOrDefault(s => s.ProcessId == (int)matchedPid);
                         string procName = matchedSession?.ProcessName ?? string.Empty;
+                        if (string.IsNullOrEmpty(procName))
+                        {
+                            try
+                            {
+                                var p = Process.GetProcessById((int)matchedPid);
+                                procName = p.ProcessName;
+                            }
+                            catch { }
+                        }
                         bool isProtected = IsAppProtected(procName);
 
                         if (isProtected)

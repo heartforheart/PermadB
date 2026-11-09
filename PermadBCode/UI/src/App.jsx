@@ -873,7 +873,7 @@ export default function App() {
               <span style={{ fontSize: '1.1rem' }}>🎧</span>
               <div>
                 <span style={{ fontWeight: '600', color: '#38bdf8' }}>Dual-Stage SFX Stream Separation Active: </span>
-                Limited apps (Brave, Spotify, games) are clamped in their pre-mix SFX stream buffers, while Bypassed apps (Discord) play un-limited at 100% nominal volume with zero ducking! Zero virtual cables required.
+                Limited apps (e.g. Discord, games) are clamped in their pre-mix SFX stream buffers, while Bypassed apps blast un-limited at 100% nominal volume with zero ducking! All apps default to Bypassed until toggled.
               </div>
             </div>
           )}
