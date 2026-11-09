@@ -14,7 +14,7 @@ static void LogApo(const wchar_t* format, ...)
     (void)format;
 }
 
-static const CRegAPOProperties<1> sm_RegProperties(
+static const CRegAPOProperties<2> sm_RegProperties(
     CLSID_PermadBLimiterAPO,
     L"PermadB Master Limiter EFX APO",
     L"Copyright (c) PermadB",
@@ -24,10 +24,11 @@ static const CRegAPOProperties<1> sm_RegProperties(
     static_cast<APO_FLAG>(DEFAULT_APOREG_FLAGS | APO_FLAG_INPLACE),
     1, 1,
     1, 1,
-    DEFAULT_APOREG_MAXINSTANCES
+    DEFAULT_APOREG_MAXINSTANCES,
+    __uuidof(IAudioSystemEffects2)
 );
 
-static const CRegAPOProperties<1> sm_RegPropertiesSfx(
+static const CRegAPOProperties<2> sm_RegPropertiesSfx(
     CLSID_PermadBSfxApo,
     L"PermadB Stream Limiter SFX APO",
     L"Copyright (c) PermadB",
@@ -37,7 +38,8 @@ static const CRegAPOProperties<1> sm_RegPropertiesSfx(
     static_cast<APO_FLAG>(DEFAULT_APOREG_FLAGS | APO_FLAG_INPLACE),
     1, 1,
     1, 1,
-    DEFAULT_APOREG_MAXINSTANCES
+    DEFAULT_APOREG_MAXINSTANCES,
+    __uuidof(IAudioSystemEffects2)
 );
 
 CPermadBLimiterAPO::CPermadBLimiterAPO(IUnknown* pUnkOuter) :
@@ -466,20 +468,8 @@ STDMETHODIMP CPermadBLimiterAPO::GetEffectsList(
         DuplicateHandle(GetCurrentProcess(), Event, GetCurrentProcess(), &m_hEffectsChangedEvent, EVENT_MODIFY_STATE, FALSE, 0);
     }
 
-    // Return our custom effect ID
-    GUID* pGuid = reinterpret_cast<GUID*>(CoTaskMemAlloc(sizeof(GUID)));
-    if (!pGuid)
-    {
-        *ppEffectsIds = nullptr;
-        *pcEffects = 0;
-        return E_OUTOFMEMORY;
-    }
-
-    *pGuid = PermadBEffectId;
-    *ppEffectsIds = pGuid;
-    *pcEffects = 1;
-
-    LogApo(L"GetEffectsList returning effect {72da89f2-2b62-4f38-9cf1-ec9e4f208c90}");
+    *ppEffectsIds = nullptr;
+    *pcEffects = 0;
     return S_OK;
 }
 
@@ -774,28 +764,37 @@ STDMETHODIMP CPermadBSfxApo::Initialize(UINT32 cbDataSize, BYTE* pbyData)
     if (cbDataSize == 0 && pbyData != nullptr) return E_INVALIDARG;
 
     UINT32 mode = PermadBMode_Default;
-    if (cbDataSize >= sizeof(APOInitSystemEffects2) && pbyData != nullptr)
+    if (pbyData != nullptr && cbDataSize >= sizeof(APOInitSystemEffects))
     {
-        APOInitSystemEffects2* pInit2 = reinterpret_cast<APOInitSystemEffects2*>(pbyData);
-        GUID m = pInit2->AudioProcessingMode;
-        if (IsEqualGUID(m, PermadB_MODE_COMMUNICATIONS) ||
-            IsEqualGUID(m, PermadB_MODE_SPEECH))
+        // Tolerant parsing for APOInitSystemEffects2 and APOInitSystemEffects3
+        if (cbDataSize >= sizeof(APOInitSystemEffects2))
         {
-            mode = PermadBMode_Communications;
-        }
-        else if (IsEqualGUID(m, PermadB_MODE_MEDIA) ||
-                 IsEqualGUID(m, PermadB_MODE_MOVIE))
-        {
-            mode = PermadBMode_Media;
-        }
-        else
-        {
-            mode = PermadBMode_Default;
+            APOInitSystemEffects2* pInit2 = reinterpret_cast<APOInitSystemEffects2*>(pbyData);
+            GUID m = pInit2->AudioProcessingMode;
+            if (IsEqualGUID(m, PermadB_MODE_COMMUNICATIONS) ||
+                IsEqualGUID(m, PermadB_MODE_SPEECH))
+            {
+                mode = PermadBMode_Communications;
+            }
+            else if (IsEqualGUID(m, PermadB_MODE_MEDIA) ||
+                     IsEqualGUID(m, PermadB_MODE_MOVIE))
+            {
+                mode = PermadBMode_Media;
+            }
+            else
+            {
+                mode = PermadBMode_Default;
+            }
         }
     }
     m_audioProcessingMode = mode;
 
-    if (m_slotIndex < 0)
+    if (!m_pTelemetry)
+    {
+        InitTelemetry();
+    }
+
+    if (m_slotIndex < 0 && m_pTelemetry)
     {
         m_slotIndex = ClaimSlot(mode);
     }
@@ -861,6 +860,13 @@ STDMETHODIMP_(void) CPermadBSfxApo::APOProcess(
     if (!pIn || !pOut || !pIn->pBuffer || !pOut->pBuffer)
         return;
 
+    // Lazy slot claiming if shared memory was created after Initialize
+    if (m_slotIndex < 0)
+    {
+        if (!m_pTelemetry) InitTelemetry();
+        if (m_pTelemetry) m_slotIndex = ClaimSlot(m_audioProcessingMode);
+    }
+
     UINT32 u32Frames = pIn->u32ValidFrameCount;
     UINT32 u32Channels = GetSamplesPerFrame();
     FLOAT32* pf32In = reinterpret_cast<FLOAT32*>(pIn->pBuffer);
@@ -880,8 +886,8 @@ STDMETHODIMP_(void) CPermadBSfxApo::APOProcess(
         pOut->u32BufferFlags = (silentOutPeak < 0.00001f) ? BUFFER_SILENT : BUFFER_VALID;
         if (m_pTelemetry && m_slotIndex >= 0 && m_slotIndex < PERMADB_SFX_MAX_SLOTS)
         {
-            m_pTelemetry->slots[m_slotIndex].inputPeak *= 0.90f;
-            m_pTelemetry->slots[m_slotIndex].outputPeak *= 0.90f;
+            m_pTelemetry->slots[m_slotIndex].inputPeak *= 0.85f;
+            m_pTelemetry->slots[m_slotIndex].outputPeak *= 0.85f;
         }
         return;
     }
@@ -930,8 +936,8 @@ STDMETHODIMP_(void) CPermadBSfxApo::APOProcess(
     {
         float prevIn = m_pTelemetry->slots[m_slotIndex].inputPeak;
         float prevOut = m_pTelemetry->slots[m_slotIndex].outputPeak;
-        m_pTelemetry->slots[m_slotIndex].inputPeak = (peakIn > prevIn) ? peakIn : (prevIn * 0.90f + peakIn * 0.10f);
-        m_pTelemetry->slots[m_slotIndex].outputPeak = (peakOut > prevOut) ? peakOut : (prevOut * 0.90f + peakOut * 0.10f);
+        m_pTelemetry->slots[m_slotIndex].inputPeak = (std::max)(peakIn, prevIn * 0.85f);
+        m_pTelemetry->slots[m_slotIndex].outputPeak = (std::max)(peakOut, prevOut * 0.85f);
     }
 }
 
@@ -952,17 +958,8 @@ STDMETHODIMP CPermadBSfxApo::GetEffectsList(
         DuplicateHandle(GetCurrentProcess(), Event, GetCurrentProcess(), &m_hEffectsChangedEvent, EVENT_MODIFY_STATE, FALSE, 0);
     }
 
-    GUID* pGuid = reinterpret_cast<GUID*>(CoTaskMemAlloc(sizeof(GUID)));
-    if (!pGuid)
-    {
-        *ppEffectsIds = nullptr;
-        *pcEffects = 0;
-        return E_OUTOFMEMORY;
-    }
-
-    *pGuid = PermadBEffectId;
-    *ppEffectsIds = pGuid;
-    *pcEffects = 1;
+    *ppEffectsIds = nullptr;
+    *pcEffects = 0;
     return S_OK;
 }
 
@@ -1125,8 +1122,9 @@ static HRESULT RegisterApoClsid(LPCWSTR clsidStr, LPCWSTR friendlyName, LPCWSTR 
     SetRegDword(HKEY_CLASSES_ROOT, apoKey, L"MinOutputConnections", 1);
     SetRegDword(HKEY_CLASSES_ROOT, apoKey, L"MaxOutputConnections", 1);
     SetRegDword(HKEY_CLASSES_ROOT, apoKey, L"MaxInstances", 0xFFFFFFFF);
-    SetRegDword(HKEY_CLASSES_ROOT, apoKey, L"NumAPOInterfaces", 1);
+    SetRegDword(HKEY_CLASSES_ROOT, apoKey, L"NumAPOInterfaces", 2);
     SetRegKeyAndValue(HKEY_CLASSES_ROOT, apoKey, L"APOInterface0", L"{FD7F2B29-24D0-4B5C-B177-592C39F9CA10}"); // IID_IAudioProcessingObject
+    SetRegKeyAndValue(HKEY_CLASSES_ROOT, apoKey, L"APOInterface1", L"{BAFE99D2-7436-44CE-9E0E-4D89AFBFFF56}"); // IID_IAudioSystemEffects2
     return S_OK;
 }
 

@@ -145,6 +145,7 @@ public class AudioMetrics
     public float Custom1PresetPercent { get; set; } = 10.0f;
     public float Custom2PresetPercent { get; set; } = 100.0f;
     public int SfxActiveCount { get; set; }
+    public string Mode => AppFilteringEnabled ? "PerApp" : "Master";
     public Dictionary<string, bool> AppProtectionRules { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public List<AppSessionInfo> AppSessions { get; set; } = new();
 }
@@ -439,9 +440,13 @@ public class AudioEngine : IMMNotificationClient, IDisposable
         {
             return val;
         }
-        // Zero hardcoded presets: all apps default to Bypassed (false).
-        // Only apps explicitly chosen by the user in Select Apps are limited.
-        return false;
+        // Voice communication apps (Discord, Teams, Slack) default to Bypassed (false).
+        // General applications (browsers, music, games) default to Limited (true) for ear protection.
+        if (CommunicationApps.Contains(processName))
+        {
+            return false;
+        }
+        return true;
     }
 
     public List<AppSessionInfo> GetDiscoverableAudioApps()
@@ -1047,7 +1052,28 @@ public class AudioEngine : IMMNotificationClient, IDisposable
             int offsetBypass = (int)Marshal.OffsetOf<PermadBSfxSlot>(nameof(PermadBSfxSlot.Bypass));
             int offsetMatchedPid = (int)Marshal.OffsetOf<PermadBSfxSlot>(nameof(PermadBSfxSlot.MatchedProcessId));
 
-            // 2. Correlate and sync each SFX slot
+            // 2. 1-Tick Fast-Path Correlation: If exactly 1 unmatched active slot has audio and exactly 1 active WASAPI session has audio, match immediately!
+            var unmatchedActiveSlots = new List<(int Index, int Offset, PermadBSfxSlot Slot)>();
+            for (int i = 0; i < 16; i++)
+            {
+                int sOff = slot0Offset + (i * slotSize);
+                _telemetryAcc.Read(sOff, out PermadBSfxSlot s);
+                if (s.Active != 0 && s.MatchedProcessId == 0 && (s.InputPeak > 0.0005f || s.OutputPeak > 0.0005f))
+                {
+                    unmatchedActiveSlots.Add((i, sOff, s));
+                }
+            }
+
+            var sessionsWithAudio = activeSessions.Where(s => s.ProcessId > 0 && s.PeakValue > 0.0005f).ToList();
+
+            if (unmatchedActiveSlots.Count == 1 && sessionsWithAudio.Count == 1)
+            {
+                var target = unmatchedActiveSlots[0];
+                uint matchedPid = (uint)sessionsWithAudio[0].ProcessId;
+                _telemetryAcc.Write(target.Offset + offsetMatchedPid, matchedPid);
+            }
+
+            // 3. Correlate and sync each SFX slot
             for (int i = 0; i < 16; i++)
             {
                 int slotOffset = slot0Offset + (i * slotSize);
@@ -1072,20 +1098,20 @@ public class AudioEngine : IMMNotificationClient, IDisposable
 
                 uint matchedPid = slot.MatchedProcessId;
 
-                // 3. Peak correlation / fast-path match if not yet bound
-                if (matchedPid == 0 && (slot.InputPeak > 0.005f || slot.OutputPeak > 0.005f))
+                // 4. Peak correlation match if not yet bound
+                if (matchedPid == 0 && (slot.InputPeak > 0.0005f || slot.OutputPeak > 0.0005f))
                 {
                     // Fast-path: Communications mode (VoIP streams like Discord)
                     if (slot.AudioProcessingMode == 1) // Communications
                     {
-                        var commSession = activeSessions.FirstOrDefault(s => CommunicationApps.Contains(s.ProcessName) && s.PeakValue > 0.001f);
+                        var commSession = activeSessions.FirstOrDefault(s => CommunicationApps.Contains(s.ProcessName) && s.PeakValue > 0.0005f);
                         if (commSession != null)
                         {
                             matchedPid = (uint)commSession.ProcessId;
                         }
                     }
 
-                    // Peak envelope correlation
+                    // Peak envelope correlation using minimum L1 distance over 3 ticks
                     if (matchedPid == 0 && slotQueue.Count >= 3)
                     {
                         float[] slotHistory = slotQueue.ToArray();
@@ -1105,7 +1131,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                                     diffSum += Math.Abs(slotHistory[slotHistory.Length - 1 - k] - sHistory[sHistory.Length - 1 - k]);
                                 }
                                 float avgDiff = diffSum / count;
-                                if (avgDiff < bestDistance && avgDiff < 0.25f)
+                                if (avgDiff < bestDistance && avgDiff < 0.35f)
                                 {
                                     bestDistance = avgDiff;
                                     bestPid = session.ProcessId;
@@ -1125,27 +1151,39 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                     }
                 }
 
-                // 4. Determine target ceiling and bypass for this slot
+                // 5. Determine target ceiling and bypass for this slot
                 float streamCeiling = safeLinear;
                 uint streamBypass = 0;
 
-                if (_config.Settings.AppFilteringEnabled && matchedPid > 0)
+                if (_config.Settings.AppFilteringEnabled)
                 {
-                    var matchedSession = activeSessions.FirstOrDefault(s => s.ProcessId == (int)matchedPid);
-                    string procName = matchedSession?.ProcessName ?? string.Empty;
-                    bool isProtected = IsAppProtected(procName);
+                    if (matchedPid > 0)
+                    {
+                        var matchedSession = activeSessions.FirstOrDefault(s => s.ProcessId == (int)matchedPid);
+                        string procName = matchedSession?.ProcessName ?? string.Empty;
+                        bool isProtected = IsAppProtected(procName);
 
-                    if (isProtected)
-                    {
-                        // Limited app (Brave, YouTube, Spotify): clamped strictly to safe preset ceiling
-                        streamCeiling = safeLinear;
-                        streamBypass = 0;
+                        if (isProtected)
+                        {
+                            // Limited app (Brave, YouTube, Spotify): clamped strictly to safe preset ceiling
+                            streamCeiling = safeLinear;
+                            streamBypass = 0;
+                        }
+                        else
+                        {
+                            // Bypassed app (Discord, TeamSpeak, voice): un-limited in SFX (capped only by EFX safety brickwall)
+                            streamCeiling = 0.8912509f;
+                            streamBypass = 1;
+                        }
                     }
-                    else
+                    else if (slot.AudioProcessingMode == 1) // Communications mode unmatched
                     {
-                        // Bypassed app (Discord, TeamSpeak, voice): un-limited in SFX (capped only by EFX safety brickwall)
-                        streamCeiling = 0.8912509f;
-                        streamBypass = 1;
+                        bool isCommProtected = IsAppProtected("Discord");
+                        if (!isCommProtected)
+                        {
+                            streamCeiling = 0.8912509f;
+                            streamBypass = 1;
+                        }
                     }
                 }
                 else

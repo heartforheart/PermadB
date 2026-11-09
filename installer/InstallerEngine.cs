@@ -206,9 +206,9 @@ public static class InstallerEngine
                         apoKey.SetValue("MinOutputConnections", 1, RegistryValueKind.DWord);
                         apoKey.SetValue("MaxOutputConnections", 1, RegistryValueKind.DWord);
                         apoKey.SetValue("MaxInstances", unchecked((int)0xFFFFFFFF), RegistryValueKind.DWord);
-                        apoKey.SetValue("NumAPOInterfaces", 1, RegistryValueKind.DWord);
+                        apoKey.SetValue("NumAPOInterfaces", 2, RegistryValueKind.DWord);
                         apoKey.SetValue("APOInterface0", "{FD7F2B29-24D0-4B5C-B177-592C39F9CA10}", RegistryValueKind.String);
-                        try { apoKey.DeleteValue("APOInterface1", false); } catch { }
+                        apoKey.SetValue("APOInterface1", "{BAFE99D2-7436-44CE-9E0E-4D89AFBFFF56}", RegistryValueKind.String);
                     }
                 }
             }
@@ -524,7 +524,7 @@ public static class InstallerEngine
             {
                 entry.ExtractToFile(destPath, overwrite: true);
             }
-            catch (IOException)
+            catch (Exception)
             {
                 try
                 {

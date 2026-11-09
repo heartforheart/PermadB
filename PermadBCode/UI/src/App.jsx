@@ -851,7 +851,7 @@ export default function App() {
 
           <p style={{ fontSize: '0.82rem', color: '#94a3b8', margin: '0 0 0.85rem 0' }}>
             {settings.appFilteringEnabled ? (
-              <span>Actively monitors running audio sessions and real-time sound pressure with virtual stream isolation.</span>
+              <span>Actively monitors running audio sessions with native Dual-Stage SFX stream isolation in <code>audiodg.exe</code>.</span>
             ) : (
               <span>🛡️ <strong>Master Safety Limiting (Default)</strong>: All system audio and applications are actively protected out of the box and clamped to your calibrated safe preset ceiling directly in <code>audiodg.exe</code> via PermadBApo.dll — zero setup, zero slider movement.</span>
             )}
@@ -872,8 +872,8 @@ export default function App() {
             }}>
               <span style={{ fontSize: '1.1rem' }}>🎧</span>
               <div>
-                <span style={{ fontWeight: '600', color: '#38bdf8' }}>Virtual Stream Separation Active: </span>
-                Set Discord / voice output device to <strong>VoiceMeeter Input</strong>. PermadB limits it to your safe ceiling and injects into your headphones, while unselected apps (Brave, Spotify, games) blast at 100% full scale with zero ducking!
+                <span style={{ fontWeight: '600', color: '#38bdf8' }}>Dual-Stage SFX Stream Separation Active: </span>
+                Limited apps (Brave, Spotify, games) are clamped in their pre-mix SFX stream buffers, while Bypassed apps (Discord) play un-limited at 100% nominal volume with zero ducking! Zero virtual cables required.
               </div>
             </div>
           )}

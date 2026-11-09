@@ -45,6 +45,31 @@ if (-not (Test-Path $dllPath)) {
     Write-Error "[ERROR] PermadBApo.dll not found at '$dllPath'. Run build_apo.bat first!"
 }
 
+# Stage to C:\Program Files\PermadB so audiodg.exe loads from standard system path
+$progFilesDir = "C:\Program Files\PermadB"
+if (-not (Test-Path $progFilesDir)) {
+    New-Item -ItemType Directory -Path $progFilesDir -Force -ErrorAction SilentlyContinue | Out-Null
+}
+$stagedDll = Join-Path $progFilesDir "PermadBApo.dll"
+try {
+    Copy-Item $dllPath -Destination $stagedDll -Force -ErrorAction SilentlyContinue
+    if (Test-Path $stagedDll) {
+        $dllPath = $stagedDll
+        Write-Host "      Staged PermadBApo.dll to $stagedDll" -ForegroundColor Green
+    }
+} catch {
+    try {
+        $oldStaged = "$stagedDll.old"
+        if (Test-Path $oldStaged) { Remove-Item $oldStaged -Force -ErrorAction SilentlyContinue }
+        Rename-Item $stagedDll $oldStaged -Force -ErrorAction SilentlyContinue
+        Copy-Item $dllPath -Destination $stagedDll -Force -ErrorAction SilentlyContinue
+        if (Test-Path $stagedDll) {
+            $dllPath = $stagedDll
+            Write-Host "      Staged PermadBApo.dll to $stagedDll (via rename)" -ForegroundColor Green
+        }
+    } catch { }
+}
+
 # 2. Allow unsigned/custom APOs in audiodg.exe (Windows 11 Requirement)
 Write-Host "[1/5] Configuring Windows Audio Engine security policy..." -ForegroundColor Yellow
 $audioKeyPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Audio"
@@ -79,9 +104,9 @@ foreach ($item in @(
         $apoKey.SetValue("MinOutputConnections", 1, [Microsoft.Win32.RegistryValueKind]::DWord)
         $apoKey.SetValue("MaxOutputConnections", 1, [Microsoft.Win32.RegistryValueKind]::DWord)
         $apoKey.SetValue("MaxInstances", [int]0xFFFFFFFF, [Microsoft.Win32.RegistryValueKind]::DWord)
-        $apoKey.SetValue("NumAPOInterfaces", 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+        $apoKey.SetValue("NumAPOInterfaces", 2, [Microsoft.Win32.RegistryValueKind]::DWord)
         $apoKey.SetValue("APOInterface0", "{FD7F2B29-24D0-4B5C-B177-592C39F9CA10}", [Microsoft.Win32.RegistryValueKind]::String) # IID_IAudioProcessingObject
-        try { $apoKey.DeleteValue("APOInterface1") } catch { }
+        $apoKey.SetValue("APOInterface1", "{BAFE99D2-7436-44CE-9E0E-4D89AFBFFF56}", [Microsoft.Win32.RegistryValueKind]::String) # IID_IAudioSystemEffects2
     } finally {
         $apoKey.Close()
     }
