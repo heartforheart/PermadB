@@ -54,6 +54,7 @@ public class ConfigManager
                         // Ensure intrusive flags from older builds are cleanly reset
                         settings.AppMixerGuardEnabled = false;
                         settings.ProtectMicrophoneInputs = false;
+                        settings.AppFilteringEnabled = false; // Master limiter protects everything by default out of the box
                         if (settings.AppVolumeOverrides.Count > 0)
                         {
                             settings.AppVolumeOverrides.Clear();

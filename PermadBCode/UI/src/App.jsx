@@ -837,20 +837,24 @@ export default function App() {
                 {metrics.appSessions?.length || 0} Apps Monitored
               </span>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', color: settings.appFilteringEnabled ? '#38bdf8' : '#94a3b8' }}>
-                <span style={{ fontWeight: settings.appFilteringEnabled ? '600' : 'normal' }}>App-Specific Mode</span>
+                <span style={{ fontWeight: settings.appFilteringEnabled ? '600' : 'normal' }}>App-Specific Mode (Advanced)</span>
                 <input 
                   type="checkbox" 
                   className="toggle-checkbox" 
                   checked={settings.appFilteringEnabled ?? false} 
                   onChange={toggleAppFiltering} 
-                  title="When enabled, only chosen apps are clamped; bypassed music blasts freely at 100%"
+                  title="Optional: When enabled, routes limited apps via virtual stream while bypassed apps blast at 100%"
                 />
               </div>
             </div>
           </div>
 
           <p style={{ fontSize: '0.82rem', color: '#94a3b8', margin: '0 0 0.85rem 0' }}>
-            Actively monitors running audio sessions and real-time sound pressure. All digital limiting is performed deterministically on raw PCM audio in <code>audiodg.exe</code> via PermadBApo.dll — zero manipulation of Windows volume mixer sliders.
+            {settings.appFilteringEnabled ? (
+              <span>Actively monitors running audio sessions and real-time sound pressure with virtual stream isolation.</span>
+            ) : (
+              <span>🛡️ <strong>Master Safety Limiting (Default)</strong>: All system audio and applications are actively protected out of the box and clamped to your calibrated safe preset ceiling directly in <code>audiodg.exe</code> via PermadBApo.dll — zero setup, zero slider movement.</span>
+            )}
           </p>
 
           {settings.appFilteringEnabled && (
