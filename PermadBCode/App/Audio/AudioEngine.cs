@@ -1274,6 +1274,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
     {
         _cts.Cancel();
         _actionQueue.CompleteAdding();
-        _audioThread.Join(500);
+        _audioThread.Join(1000);
+        CleanupCom();
     }
 }

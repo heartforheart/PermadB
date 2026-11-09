@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Drawing;
 using System.Windows.Forms;
+using NAudio.CoreAudioApi;
 using PermadB.Audio;
 using PermadB.Config;
 
@@ -36,10 +37,18 @@ public class TrayIconManager : IDisposable
     public event Action? OnOpenAppManagerRequested;
     public event Action? OnExitRequested;
 
+    private readonly Action<DeviceProfile> _activeDeviceHandler;
+    private readonly Action _devicesUpdatedHandler;
+    private readonly Action<AppSettings> _settingsChangedHandler;
+
     public TrayIconManager(ConfigManager config, AudioEngine engine)
     {
         _config = config;
         _engine = engine;
+
+        _activeDeviceHandler = _ => UpdateTrayAppearance();
+        _devicesUpdatedHandler = () => UpdateTrayAppearance();
+        _settingsChangedHandler = _ => UpdateTrayAppearance();
 
         _contextMenu = new ContextMenuStrip();
         _contextMenu.RenderMode = ToolStripRenderMode.System;
@@ -68,9 +77,9 @@ public class TrayIconManager : IDisposable
         };
 
         // Listen for engine and config updates
-        _engine.OnActiveDeviceChanged += _ => UpdateTrayAppearance();
-        _engine.OnDevicesUpdated += UpdateTrayAppearance;
-        _config.OnSettingsChanged += _ => UpdateTrayAppearance();
+        _engine.OnActiveDeviceChanged += _activeDeviceHandler;
+        _engine.OnDevicesUpdated += _devicesUpdatedHandler;
+        _config.OnSettingsChanged += _settingsChangedHandler;
 
         // Make visible in system tray only after Icon, Text, and Menu are properly configured
         _notifyIcon.Visible = true;
@@ -491,6 +500,10 @@ public class TrayIconManager : IDisposable
 
     public void Dispose()
     {
+        _engine.OnActiveDeviceChanged -= _activeDeviceHandler;
+        _engine.OnDevicesUpdated -= _devicesUpdatedHandler;
+        _config.OnSettingsChanged -= _settingsChangedHandler;
+
         _notifyIcon.Visible = false;
         _notifyIcon.Icon?.Dispose();
         _notifyIcon.Dispose();
