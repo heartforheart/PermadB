@@ -173,6 +173,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
     private readonly ConcurrentDictionary<int, string> _processNameCache = new();
     private readonly ConcurrentDictionary<string, float> _appSmoothedPeak = new(StringComparer.OrdinalIgnoreCase);
     private DateTime _lastProtectedAudioTime = DateTime.MinValue;
+    private DateTime _lastBypassedAudioTime = DateTime.MinValue;
 
     // Voice communication applications where speech intelligibility must NEVER be crushed or muted
     public static readonly HashSet<string> CommunicationApps = new(StringComparer.OrdinalIgnoreCase)
@@ -305,6 +306,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
         _config.Settings.AppProtectionRules[processName] = isProtected;
         _config.Save();
         _lastProtectedAudioTime = DateTime.MinValue;
+        _lastBypassedAudioTime = DateTime.MinValue;
         _lastSessionScan = DateTime.MinValue; // Force immediate re-scan!
         PostToAudioThread(() =>
         {
@@ -318,6 +320,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
         _config.Settings.AppFilteringEnabled = enabled ?? !_config.Settings.AppFilteringEnabled;
         _config.Save();
         _lastProtectedAudioTime = DateTime.MinValue;
+        _lastBypassedAudioTime = DateTime.MinValue;
         _lastSessionScan = DateTime.MinValue; // Force immediate re-scan!
         PostToAudioThread(() =>
         {
@@ -831,14 +834,32 @@ public class AudioEngine : IMMNotificationClient, IDisposable
             if (_config.Settings.AppFilteringEnabled && isEnabled)
             {
                 // When Application-Specific Limiting is enabled:
-                // Check if any protected application (e.g. Discord, or Brave when marked Limited) is actively outputting audio.
-                // If yes: the APO dynamically clamps the stream to the safe acoustic preset ceiling.
-                // If no (only bypassed apps like music are playing): the APO runs in transparent peak-limiter mode (-1.0 dBFS)
-                // so music blasts freely at 100% full volume!
-                // Limiting is executed 100% inside audiodg.exe via PermadBApo.dll — ZERO volume mixer manipulation!
-                bool isProtectedAppActive = (DateTime.UtcNow - _lastProtectedAudioTime).TotalMilliseconds < 800;
-                if (!isProtectedAppActive)
+                // 1. If any BYPASSED application (e.g. Spotify, YouTube in browser, media players) is actively playing audio:
+                //    The user explicitly bypassed this app so music blasts freely at 100% full scale!
+                //    The Master APO runs in transparent peak-limiter mode (-1.0 dBFS / 0.8912 linear) so bypassed
+                //    music is NEVER lowered, ducked, or muffled by background communications like Discord!
+                // 2. If NO bypassed application is playing, and a PROTECTED application (e.g. Discord) is active:
+                //    The Master APO dynamically clamps to the safe acoustic preset ceiling (e.g. 75 dBA),
+                //    protecting hearing from loud voice chat spikes!
+                // 3. If idle / silence:
+                //    Runs in transparent peak-limiter mode (-1.0 dBFS).
+                bool isBypassedAppActive = (DateTime.UtcNow - _lastBypassedAudioTime).TotalMilliseconds < 1500;
+                bool isProtectedAppActive = (DateTime.UtcNow - _lastProtectedAudioTime).TotalMilliseconds < 1500;
+
+                if (isBypassedAppActive)
                 {
+                    // Bypassed music/media is actively playing: blast freely at 100% full scale!
+                    linear = 0.8912509f;
+                    dbfs = -1.0f;
+                }
+                else if (isProtectedAppActive)
+                {
+                    // Only protected application(s) (e.g. Discord) are active: clamp to calibrated safe preset ceiling!
+                    // linear remains GetActivePresetLinearCeiling()
+                }
+                else
+                {
+                    // Idle desktop audio: transparent peak-limiter mode
                     linear = 0.8912509f;
                     dbfs = -1.0f;
                 }
@@ -1115,10 +1136,18 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                                                 bool isProt = IsAppProtected(procName);
                                                 bool isAppClamped = false;
 
-                                                bool isAppActive = rawAppPeak > 0.001f;
-                                                if (isProt && isAppActive)
+                                                // Clean noise gate: 0.005f (-46 dBFS) ignores DAC dither and idle mic silence
+                                                bool isAppActive = rawAppPeak > 0.005f || smoothedPeak > 0.005f;
+                                                if (isAppActive)
                                                 {
-                                                    _lastProtectedAudioTime = DateTime.UtcNow;
+                                                    if (isProt)
+                                                    {
+                                                        _lastProtectedAudioTime = DateTime.UtcNow;
+                                                    }
+                                                    else if (pid > 0 && !procName.Equals("System Sounds", StringComparison.OrdinalIgnoreCase))
+                                                    {
+                                                        _lastBypassedAudioTime = DateTime.UtcNow;
+                                                    }
                                                 }
 
                                                 if (_config.Settings.Enabled)

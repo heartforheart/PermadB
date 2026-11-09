@@ -37,9 +37,9 @@
    `AudioEngine.cs` writes `targetCeilingLinear`, `targetCeilingDbfs`, `isEnabled`, and increments `commandSeq` in `permadb_apo_telemetry.dat`. `PermadBApo.dll` detects the sequence change in real time and updates its internal limiter threshold (`SetCeilingLinear`).
 6. **Application-Specific Limiting Protocol**:
    - Every application defaults to `Bypassed` (`false`) with zero hardcoded presets.
-   - When App-Specific Mode is enabled, the daemon monitors instantaneous session activity (`rawAppPeak > 0.001f`).
-   - If an application explicitly marked `[🛡️ LIMITED]` by the user produces audio, the daemon sets the APO ceiling to the active preset level (`linearCeiling`).
-   - If only `[⚡ BYPASSED]` applications produce audio, the daemon switches the APO to transparent peak-limiter mode (`-1.0 dBFS` / `0.8912` linear), allowing unconstrained blast.
+   - When App-Specific Mode is enabled, the daemon monitors instantaneous session activity (`rawAppPeak > 0.005f`).
+   - If a bypassed application (e.g. Spotify, YouTube) outputs audio, the APO runs in transparent peak-limiter mode (`-1.0 dBFS` / `0.8912` linear), allowing unconstrained 100% blast without being lowered or ducked by limited apps like Discord.
+   - If only applications explicitly marked `[🛡️ LIMITED]` by the user produce audio, the daemon sets the APO ceiling to the active preset level (`linearCeiling`).
    - **Volume Mixer Immutability**: All limiting is performed entirely in `audiodg.exe` PCM buffers; `s.SimpleAudioVolume.Volume` is never written to, keeping Windows Volume Mixer sliders completely static.
 7. **Telemetry & Client Presentation**:
    - `PermadBApo.dll` writes live input peak, output peak, gain reduction (dB), and activation counts to telemetry shared memory.
