@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.MemoryMappedFiles;
 using System.Linq;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Threading;
 using Microsoft.Win32;
@@ -149,6 +150,24 @@ public class AudioEngine : IMMNotificationClient, IDisposable
     private readonly object _discoverableAppsLock = new();
     private List<AppSessionInfo> _cachedDiscoveredApps = new();
     private DateTime _lastDiscoveredAppsScan = DateTime.MinValue;
+
+    // Native WASAPI COM field reflection caches for zero-allocation, zero-leak session queries
+    private static readonly FieldInfo? AsmField = typeof(AudioSessionManager).GetField("audioSessionInterface2", BindingFlags.NonPublic | BindingFlags.Instance);
+    private static readonly FieldInfo? MeterNativeField = typeof(AudioMeterInformation).GetField("audioMeterInformation", BindingFlags.NonPublic | BindingFlags.Instance);
+
+    private IAudioSessionManager2? GetNativeSessionManager()
+    {
+        if (_activeDevice == null) return null;
+        try
+        {
+            var asm = _activeDevice.AudioSessionManager;
+            return AsmField?.GetValue(asm) as IAudioSessionManager2;
+        }
+        catch
+        {
+            return null;
+        }
+    }
 
     // Process name and peak tracking for active WASAPI audio sessions
     private readonly ConcurrentDictionary<int, string> _processNameCache = new();
@@ -975,17 +994,37 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                 estimatedContinuousSpl = Math.Min(estimatedContinuousSpl, profile.TargetSafeDbSpl);
             }
 
-            var channelCount = meter.PeakValues.Count;
-            var channelPeaks = new float[channelCount];
-            for (int i = 0; i < channelCount; i++)
+            float[] channelPeaks = [peak, peak];
+            try
             {
-                float chPeak = meter.PeakValues[i];
-                if (isApoRecentlyActive && chPeak > peak)
+                var rawMeter = MeterNativeField?.GetValue(meter) as IAudioMeterInformation;
+                if (rawMeter != null)
                 {
-                    chPeak = peak;
+                    rawMeter.GetMeteringChannelCount(out int chCount);
+                    if (chCount > 0)
+                    {
+                        var peaksArr = new float[chCount];
+                        GCHandle handle = GCHandle.Alloc(peaksArr, GCHandleType.Pinned);
+                        try
+                        {
+                            rawMeter.GetChannelsPeakValues(chCount, handle.AddrOfPinnedObject());
+                            if (isApoRecentlyActive)
+                            {
+                                for (int c = 0; c < chCount; c++)
+                                {
+                                    if (peaksArr[c] > peak) peaksArr[c] = peak;
+                                }
+                            }
+                            channelPeaks = peaksArr;
+                        }
+                        finally
+                        {
+                            handle.Free();
+                        }
+                    }
                 }
-                channelPeaks[i] = chPeak;
             }
+            catch { }
 
             // Active Hearing Safety Monitoring: Detect if acoustic output exceeds safe target for UI meter stats
             bool isExceedingCeiling = estimatedPeakSpl > profile.TargetSafeDbSpl;
@@ -994,102 +1033,149 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                 OnPeakClamped?.Invoke(peakDbfs);
             }
 
-            // Per-Application Sound Mixer & Active Session Leveler (Responsive 100ms cycle)
-            if ((DateTime.UtcNow - _lastSessionScan).TotalMilliseconds >= 100)
+            // Per-Application Sound Mixer & Active Session Leveler (Responsive 250ms cycle)
+            // INVARIANT: Native COM pointers are 100% explicitly released with Marshal.ReleaseComObject.
+            // NAudio's leaky AudioSessionManager.RefreshSessions() is NEVER called, preventing Audiosrv svchost bloat.
+            if ((DateTime.UtcNow - _lastSessionScan).TotalMilliseconds >= 250)
             {
                 _lastSessionScan = DateTime.UtcNow;
                 var appSessionsList = new List<AppSessionInfo>();
                 try
                 {
-                    var sessionManager = _activeDevice.AudioSessionManager;
-                    sessionManager.RefreshSessions();
-                    var sessions = sessionManager.Sessions;
-                    int sessionCount = sessions.Count;
-
-                    for (int i = 0; i < sessionCount; i++)
+                    var mgr2 = GetNativeSessionManager();
+                    if (mgr2 != null)
                     {
-                        var s = sessions[i];
-                        try
+                        int hrEnum = mgr2.GetSessionEnumerator(out var sessionEnum);
+                        if (hrEnum == 0 && sessionEnum != null)
                         {
-                            if (s.State == AudioSessionState.AudioSessionStateExpired) continue;
-
-                            var pid = (int)s.GetProcessID;
-                            string procName = "System Sounds";
-                            if (pid > 0)
+                            try
                             {
-                                procName = _processNameCache.GetOrAdd(pid, p =>
+                                int hrCount = sessionEnum.GetCount(out int sessionCount);
+                                if (hrCount == 0 && sessionCount > 0)
                                 {
-                                    try
+                                    for (int i = 0; i < sessionCount; i++)
                                     {
-                                        using var proc = Process.GetProcessById(p);
-                                        return proc.ProcessName;
+                                        int hrS = sessionEnum.GetSession(i, out var s);
+                                        if (hrS == 0 && s != null)
+                                        {
+                                            try
+                                            {
+                                                int sState = 0;
+                                                s.GetState(out sState);
+                                                if (sState == 2) continue; // 2 = AudioSessionStateExpired
+
+                                                uint pid = 0;
+                                                string displayName = string.Empty;
+                                                if (s is IAudioSessionControl2 ctl2)
+                                                {
+                                                    ctl2.GetProcessId(out pid);
+                                                    ctl2.GetDisplayName(out displayName);
+                                                }
+
+                                                string procName = "System Sounds";
+                                                if (pid > 0)
+                                                {
+                                                    procName = _processNameCache.GetOrAdd((int)pid, p =>
+                                                    {
+                                                        try
+                                                        {
+                                                            using var proc = Process.GetProcessById(p);
+                                                            return proc.ProcessName;
+                                                        }
+                                                        catch { return $"PID {p}"; }
+                                                    });
+                                                }
+
+                                                float appVol = 1.0f;
+                                                bool appMute = false;
+                                                if (s is ISimpleAudioVolume vol)
+                                                {
+                                                    vol.GetMasterVolume(out appVol);
+                                                    vol.GetMute(out appMute);
+                                                }
+
+                                                float rawAppPeak = 0.0f;
+                                                if (s is IAudioMeterInformation appMeter)
+                                                {
+                                                    appMeter.GetPeakValue(out rawAppPeak);
+                                                }
+
+                                                var smoothedPeak = _appSmoothedPeak.AddOrUpdate(
+                                                    procName,
+                                                    rawAppPeak,
+                                                    (_, prev) => Math.Max(rawAppPeak, prev * 0.75f + rawAppPeak * 0.25f)
+                                                );
+
+                                                var appPeakDbfs = smoothedPeak > 0.00001f ? 20.0f * (float)Math.Log10(smoothedPeak) : -96.0f;
+                                                bool isVoip = CommunicationApps.Contains(procName);
+                                                float crestFactor = isVoip ? 15.0f : 11.0f;
+                                                var appEstPeakSpl = Math.Clamp(profile.EstimatedMaxDbSpl + appPeakDbfs + masterDbAtten, 25.0f, 120.0f);
+                                                var appEstContinuousSpl = Math.Clamp(appEstPeakSpl - crestFactor, 25.0f, 105.0f);
+
+                                                bool isProt = IsAppProtected(procName);
+                                                bool isAppClamped = false;
+
+                                                bool isAppActive = rawAppPeak > 0.001f;
+                                                if (isProt && isAppActive)
+                                                {
+                                                    _lastProtectedAudioTime = DateTime.UtcNow;
+                                                }
+
+                                                if (_config.Settings.Enabled)
+                                                {
+                                                    if (_config.Settings.AppFilteringEnabled)
+                                                    {
+                                                        isAppClamped = isProt && isAppActive && isClamping;
+                                                    }
+                                                    else
+                                                    {
+                                                        isAppClamped = isClamping;
+                                                    }
+                                                }
+
+                                                // INVARIANT: PermadB NEVER modifies Windows Volume Mixer sliders (s.SimpleAudioVolume.Volume).
+                                                // All digital limiting is executed deterministically on raw PCM inside audiodg.exe via PermadBApo.dll.
+
+                                                appSessionsList.Add(new AppSessionInfo
+                                                {
+                                                    ProcessId = (int)pid,
+                                                    ProcessName = procName,
+                                                    DisplayName = string.IsNullOrWhiteSpace(displayName) ? procName : displayName,
+                                                    VolumePercent = (float)Math.Round(appVol * 100.0f, 1),
+                                                    PeakValue = (float)Math.Round(smoothedPeak, 3),
+                                                    PeakDbfs = (float)Math.Round(appPeakDbfs, 1),
+                                                    EstimatedDbSpl = (float)Math.Round(appEstContinuousSpl, 1),
+                                                    IsMuted = appMute,
+                                                    IsClamped = isAppClamped,
+                                                    IsProtected = isProt,
+                                                    IsUnsafe = appEstContinuousSpl > profile.TargetSafeDbSpl
+                                                });
+                                            }
+                                            finally
+                                            {
+                                                Marshal.ReleaseComObject(s);
+                                            }
+                                        }
                                     }
-                                    catch { return $"PID {p}"; }
-                                });
-                            }
-
-                            var appVol = s.SimpleAudioVolume.Volume;
-                            var appMeter = s.AudioMeterInformation;
-                            var rawAppPeak = appMeter.MasterPeakValue;
-                            var appMute = s.SimpleAudioVolume.Mute;
-
-                            var smoothedPeak = _appSmoothedPeak.AddOrUpdate(
-                                procName,
-                                rawAppPeak,
-                                (_, prev) => Math.Max(rawAppPeak, prev * 0.75f + rawAppPeak * 0.25f)
-                            );
-
-                            var appPeakDbfs = smoothedPeak > 0.00001f ? 20.0f * (float)Math.Log10(smoothedPeak) : -96.0f;
-                            bool isVoip = CommunicationApps.Contains(procName);
-                            float crestFactor = isVoip ? 15.0f : 11.0f;
-                            var appEstPeakSpl = Math.Clamp(profile.EstimatedMaxDbSpl + appPeakDbfs + masterDbAtten, 25.0f, 120.0f);
-                            var appEstContinuousSpl = Math.Clamp(appEstPeakSpl - crestFactor, 25.0f, 105.0f);
-
-                            bool isProt = IsAppProtected(procName);
-                            bool isAppClamped = false;
-
-                            bool isAppActive = rawAppPeak > 0.001f;
-                            if (isProt && isAppActive)
-                            {
-                                _lastProtectedAudioTime = DateTime.UtcNow;
-                            }
-
-                            if (_config.Settings.Enabled)
-                            {
-                                if (_config.Settings.AppFilteringEnabled)
-                                {
-                                    isAppClamped = isProt && isAppActive && isClamping;
-                                }
-                                else
-                                {
-                                    isAppClamped = isClamping;
                                 }
                             }
-
-                            // INVARIANT: PermadB NEVER modifies Windows Volume Mixer sliders (s.SimpleAudioVolume.Volume).
-                            // All digital limiting is executed deterministically on raw PCM inside audiodg.exe via PermadBApo.dll.
-
-                            appSessionsList.Add(new AppSessionInfo
+                            finally
                             {
-                                ProcessId = pid,
-                                ProcessName = procName,
-                                DisplayName = string.IsNullOrWhiteSpace(s.DisplayName) ? procName : s.DisplayName,
-                                VolumePercent = (float)Math.Round(appVol * 100.0f, 1),
-                                PeakValue = (float)Math.Round(smoothedPeak, 3),
-                                PeakDbfs = (float)Math.Round(appPeakDbfs, 1),
-                                EstimatedDbSpl = (float)Math.Round(appEstContinuousSpl, 1),
-                                IsMuted = appMute,
-                                IsClamped = isAppClamped,
-                                IsProtected = isProt,
-                                IsUnsafe = appEstContinuousSpl > profile.TargetSafeDbSpl
-                            });
-                        }
-                        finally
-                        {
-                            try { (s as IDisposable)?.Dispose(); } catch { }
+                                Marshal.ReleaseComObject(sessionEnum);
+                            }
                         }
                     }
-                    try { (sessions as IDisposable)?.Dispose(); } catch { }
+
+                    // Periodic prune of process name cache to prevent unbounded growth over weeks
+                    if (_processNameCache.Count > 250)
+                    {
+                        _processNameCache.Clear();
+                    }
+                    if (_appSmoothedPeak.Count > 250)
+                    {
+                        _appSmoothedPeak.Clear();
+                    }
+
                     _cachedAppSessions = appSessionsList;
                     InternalSendCeilingToApo();
                 }
