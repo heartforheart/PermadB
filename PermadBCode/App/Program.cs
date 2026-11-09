@@ -5,6 +5,7 @@ using System.Windows.Forms;
 using PermadB.Audio;
 using PermadB.Config;
 using PermadB.Forms;
+using PermadB.Server;
 using PermadB.Tray;
 
 namespace PermadB;
@@ -19,10 +20,22 @@ static class Program
     [STAThread]
     static void Main(string[] args)
     {
+        AppLogger.Log($"[MAIN_ENTRY] Args: '{string.Join(" ", args)}', ProcessId: {Environment.ProcessId}");
+        AppDomain.CurrentDomain.UnhandledException += (s, e) =>
+        {
+            AppLogger.Log($"[FATAL] AppDomain UnhandledException: {e.ExceptionObject}");
+        };
+        Application.ThreadException += (s, e) =>
+        {
+            AppLogger.Log($"[FATAL] Application ThreadException: {e.Exception}");
+        };
+
         // Enforce single instance
         _mutex = new Mutex(true, MutexName, out bool isNewInstance);
+        AppLogger.Log($"[MAIN_MUTEX] isNewInstance={isNewInstance}");
         if (!isNewInstance)
         {
+            AppLogger.Log($"[MAIN_MUTEX] Another instance already running, exiting.");
             // Another instance is already running; signal it to show its native dashboard popup and exit
             try
             {
@@ -34,11 +47,14 @@ static class Program
         }
 
         ApplicationConfiguration.Initialize();
+        AppLogger.Log("[MAIN_STEP] ApplicationConfiguration.Initialize done");
 
         var config = new ConfigManager();
         var engine = new AudioEngine(config);
         var dashboardForm = new DashboardForm(config, engine);
         var tray = new TrayIconManager(config, engine);
+        var apiServer = new ApiServer(config, engine);
+        apiServer.Start();
 
         tray.OnOpenDashboardRequested += () =>
         {
@@ -88,8 +104,11 @@ static class Program
             );
         }
 
+        AppLogger.Log($"[STARTUP] PermadB process starting up (PID {Environment.ProcessId})...");
         Application.ApplicationExit += (s, e) =>
         {
+            AppLogger.Log($"[SHUTDOWN] Application.ApplicationExit triggered (PID {Environment.ProcessId}).");
+            apiServer.Dispose();
             dashboardForm.Dispose();
             tray.Dispose();
             engine.Dispose();

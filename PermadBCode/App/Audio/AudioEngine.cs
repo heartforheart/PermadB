@@ -864,13 +864,8 @@ public class AudioEngine : IMMNotificationClient, IDisposable
 
             if (_telemetryAcc != null)
             {
-                // Verify whether the live APO is in sync with our desired ceiling
-                _telemetryAcc.Read(0, out PermadBApoTelemetry telem);
-                bool apoOutOfSync = (telem.Magic != 0x5045524D) ||
-                                    (Math.Abs(telem.ConfiguredCeilingLinear - linear) > 0.005f) ||
-                                    (telem.IsEnabled != (uint)enabledInt);
-
-                if (apoOutOfSync || Math.Abs(linear - _lastSentCeilingLinear) > 0.001f || enabledInt != _lastSentEnabled)
+                bool commandChanged = Math.Abs(linear - _lastSentCeilingLinear) > 0.001f || enabledInt != _lastSentEnabled;
+                if (commandChanged)
                 {
                     _apoCommandSeq++;
                     int offsetMagic = (int)Marshal.OffsetOf<PermadBApoTelemetry>(nameof(PermadBApoTelemetry.Magic));
