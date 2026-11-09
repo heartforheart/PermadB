@@ -84,21 +84,23 @@ public sealed class VirtualStreamBridge : IDisposable
         {
             const string vmGuid = "{e2b7e35a-a3a1-4f82-b5b0-48e65a3f594c}";
             string regPath = $@"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render\{vmGuid}";
-            using var key = Registry.LocalMachine.OpenSubKey(regPath, writable: true);
-            if (key != null)
+            using var readKey = Registry.LocalMachine.OpenSubKey(regPath, writable: false);
+            if (readKey != null)
             {
-                var val = key.GetValue("DeviceState");
+                var val = readKey.GetValue("DeviceState");
                 if (val is int intVal && intVal != 1)
                 {
-                    key.SetValue("DeviceState", 1, RegistryValueKind.DWord);
-                    AppLogger.Log($"[VirtualStreamBridge] VoiceMeeter Input DeviceState restored from {intVal} to 1 (Active).");
+                    try
+                    {
+                        using var writeKey = Registry.LocalMachine.OpenSubKey(regPath, writable: true);
+                        writeKey?.SetValue("DeviceState", 1, RegistryValueKind.DWord);
+                        AppLogger.Log($"[VirtualStreamBridge] VoiceMeeter Input DeviceState restored from {intVal} to 1 (Active).");
+                    }
+                    catch { }
                 }
             }
         }
-        catch (Exception ex)
-        {
-            AppLogger.Log($"[VirtualStreamBridge] Note: EnsureVirtualDeviceActive check: {ex.Message}");
-        }
+        catch { }
     }
 
     /// <summary>
@@ -138,6 +140,12 @@ public sealed class VirtualStreamBridge : IDisposable
     {
         lock (_syncLock)
         {
+            if (_isRunning && _targetDeviceId == physicalOutputDevice.ID)
+            {
+                UpdateCeiling(initialLinearCeiling);
+                return;
+            }
+
             if (_isRunning) Stop();
 
             _targetDeviceId = physicalOutputDevice.ID;
