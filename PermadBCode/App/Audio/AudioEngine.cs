@@ -151,6 +151,9 @@ public class AudioEngine : IMMNotificationClient, IDisposable
     private List<AppSessionInfo> _cachedDiscoveredApps = new();
     private DateTime _lastDiscoveredAppsScan = DateTime.MinValue;
 
+    // Virtual audio stream bridge for per-app stream separation
+    private readonly VirtualStreamBridge _virtualBridge = new();
+
     // Native WASAPI COM field reflection caches for zero-allocation, zero-leak session queries
     private static readonly FieldInfo? AsmField = typeof(AudioSessionManager).GetField("audioSessionInterface2", BindingFlags.NonPublic | BindingFlags.Instance);
     private static readonly FieldInfo? MeterNativeField = typeof(AudioMeterInformation).GetField("audioMeterInformation", BindingFlags.NonPublic | BindingFlags.Instance);
@@ -280,6 +283,8 @@ public class AudioEngine : IMMNotificationClient, IDisposable
 
         PostToAudioThread(() =>
         {
+            _virtualBridge.UpdateCeiling(GetActivePresetLinearCeiling());
+            InternalSyncVirtualBridge();
             InternalEnforceCeiling();
             InternalPollMeter();
         });
@@ -313,6 +318,8 @@ public class AudioEngine : IMMNotificationClient, IDisposable
         AppLogger.Log($"[USER_ACTION] SetAppProtection: '{processName}' -> {(isProtected ? "LIMITED [PROTECTED]" : "BYPASSED [BLAST]")}");
         PostToAudioThread(() =>
         {
+            _virtualBridge.UpdateCeiling(GetActivePresetLinearCeiling());
+            InternalSyncVirtualBridge();
             InternalEnforceCeiling();
             InternalPollMeter();
         });
@@ -328,9 +335,30 @@ public class AudioEngine : IMMNotificationClient, IDisposable
         AppLogger.Log($"[USER_ACTION] ToggleAppFiltering: {(_config.Settings.AppFilteringEnabled ? "ON (App-Specific Mode)" : "OFF (Master Mode)")}");
         PostToAudioThread(() =>
         {
+            InternalSyncVirtualBridge();
             InternalEnforceCeiling();
             InternalPollMeter();
         });
+    }
+
+    private void InternalSyncVirtualBridge()
+    {
+        try
+        {
+            if (_config.Settings.AppFilteringEnabled && _config.Settings.Enabled && _enumerator != null && _activeDevice != null)
+            {
+                float ceiling = GetActivePresetLinearCeiling();
+                _virtualBridge.Start(_enumerator, _activeDevice, ceiling);
+            }
+            else
+            {
+                _virtualBridge.Stop();
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Log($"[AudioEngine] Error in InternalSyncVirtualBridge: {ex.Message}");
+        }
     }
 
     public bool IsAppProtected(string processName)
@@ -522,6 +550,8 @@ public class AudioEngine : IMMNotificationClient, IDisposable
 
         PostToAudioThread(() =>
         {
+            _virtualBridge.UpdateCeiling(GetActivePresetLinearCeiling());
+            InternalSyncVirtualBridge();
             InternalEnforceCeiling();
             InternalPollMeter();
         });
@@ -651,6 +681,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                 Console.WriteLine($"[AudioEngine] Active Device: {friendlyName} ({profile.DeviceType}, Preset={_config.Settings.ActivePreset}, Ceiling={profile.SafeCeilingPercent:F0}%)");
                 EnsureEndpointFxProperties(id);
                 UpdateCachedProfile(profile);
+                InternalSyncVirtualBridge();
                 InternalEnforceCeiling();
             }
         }
@@ -838,46 +869,13 @@ public class AudioEngine : IMMNotificationClient, IDisposable
             if (_config.Settings.AppFilteringEnabled && isEnabled)
             {
                 // In App-Specific Limiting mode:
-                // 1. If only protected app(s) (e.g. Discord) are producing audio:
-                //    The Master APO enforces the calibrated safe preset ceiling (e.g. 75 dBA Safe Mode = -16.0 dBFS).
-                // 2. If bypassed app(s) (e.g. Brave, Spotify) are active AND no protected app is spiking:
-                //    The Master APO runs in transparent peak-limiter mode (-1.0 dBFS / 0.8912 linear) so music blasts at 100%!
-                // 3. If bypassed app(s) are active AND a protected app has a loud spike (screamer/mic clip):
-                //    The Master APO immediately clamps to the safe ceiling for the duration of the spike!
-                // 4. Idle / silence:
-                //    Transparent peak-limiter mode (-1.0 dBFS).
-                bool isBypassedAppActive = (DateTime.UtcNow - _lastBypassedAudioTime).TotalMilliseconds < 1200;
-                bool isProtectedAppActive = (DateTime.UtcNow - _lastProtectedAudioTime).TotalMilliseconds < 1200;
-                bool isProtectedSpikeActive = (DateTime.UtcNow - _lastProtectedSpikeTime).TotalMilliseconds < 1200;
-
-                if (isBypassedAppActive)
-                {
-                    if (isProtectedSpikeActive)
-                    {
-                        // Protected application had a loud burst/spike while music was playing:
-                        // Clamp to calibrated safe preset ceiling to protect hearing!
-                        // linear remains GetActivePresetLinearCeiling()
-                    }
-                    else
-                    {
-                        // Music is blasting and Discord is normal or silent:
-                        // Transparent peak limiter mode (-1.0 dBFS)
-                        linear = 0.8912509f;
-                        dbfs = -1.0f;
-                    }
-                }
-                else if (isProtectedAppActive)
-                {
-                    // Only protected application(s) (e.g. Discord) are active:
-                    // Enforce calibrated safe preset ceiling!
-                    // linear remains GetActivePresetLinearCeiling()
-                }
-                else
-                {
-                    // Idle desktop: transparent mode
-                    linear = 0.8912509f;
-                    dbfs = -1.0f;
-                }
+                // 1. Target limited voice/game apps (Discord) route into VoiceMeeter Input -> VirtualStreamBridge,
+                //    where they are clamped strictly to the calibrated safe preset ceiling.
+                // 2. The Master APO on the physical output device runs in transparent peak-limiter mode (-1.0 dBFS)
+                //    so that bypassed apps (Brave, Spotify, games) blast at 100% full volume with ZERO ducking!
+                linear = 0.8912509f;
+                dbfs = -1.0f;
+                _virtualBridge.UpdateCeiling(GetActivePresetLinearCeiling());
             }
 
             int enabledInt = isEnabled ? 1 : 0;
@@ -936,6 +934,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
     {
         // Limiting is executed directly on PCM inside audiodg.exe via PermadBApo.dll.
         // Windows volume sliders are NEVER altered.
+        InternalSyncVirtualBridge();
         InternalSendCeilingToApo();
 
         int count = 0;
@@ -1232,7 +1231,8 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                         _lastLogTick = now;
                         var summaries = appSessionsList.Select(x => $"{x.ProcessName}(v={x.VolumePercent:F0}%,pk={x.PeakValue:F2},prot={x.IsProtected},clmp={x.IsClamped})");
                         float apoDbfs = _lastSentCeilingLinear > 0.0001f ? 20.0f * (float)Math.Log10(_lastSentCeilingLinear) : -96.0f;
-                        AppLogger.Log($"[HEARTBEAT] Mode={(_config.Settings.AppFilteringEnabled ? "AppSpecific" : "Master")}, Preset={_config.Settings.ActivePreset}({profile.SafeCeilingPercent:F0}%), APO={_lastSentCeilingLinear:F4}({apoDbfs:F1}dBFS), MtrPeak={meterPeak:F2}, MtrVol={volScalar:P0}, Sessions=[{string.Join(", ", summaries)}]");
+                        string bridgeStatus = _virtualBridge.IsActive ? $"ACTIVE(GR={_virtualBridge.CurrentGainReductionDb:F1}dB,act={_virtualBridge.LimiterActivations})" : "OFF";
+                        AppLogger.Log($"[HEARTBEAT] Mode={(_config.Settings.AppFilteringEnabled ? "AppSpecific" : "Master")}, Preset={_config.Settings.ActivePreset}({profile.SafeCeilingPercent:F0}%), Bridge={bridgeStatus}, APO={_lastSentCeilingLinear:F4}({apoDbfs:F1}dBFS), MtrPeak={meterPeak:F2}, MtrVol={volScalar:P0}, Sessions=[{string.Join(", ", summaries)}]");
                     }
                 }
                 catch { }
@@ -1322,6 +1322,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                 _activeDevice.AudioEndpointVolume.OnVolumeNotification -= _volumeDelegate;
             }
             _enumerator?.Dispose();
+            _virtualBridge.Dispose();
         }
         catch { }
     }

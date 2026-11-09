@@ -853,6 +853,27 @@ export default function App() {
             Actively monitors running audio sessions and real-time sound pressure. All digital limiting is performed deterministically on raw PCM audio in <code>audiodg.exe</code> via PermadBApo.dll — zero manipulation of Windows volume mixer sliders.
           </p>
 
+          {settings.appFilteringEnabled && (
+            <div style={{
+              background: 'rgba(56, 189, 248, 0.08)',
+              border: '1px solid rgba(56, 189, 248, 0.25)',
+              borderRadius: '8px',
+              padding: '0.65rem 0.85rem',
+              marginBottom: '0.85rem',
+              fontSize: '0.8rem',
+              color: '#e2e8f0',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.6rem'
+            }}>
+              <span style={{ fontSize: '1.1rem' }}>🎧</span>
+              <div>
+                <span style={{ fontWeight: '600', color: '#38bdf8' }}>Virtual Stream Separation Active: </span>
+                Set Discord / voice output device to <strong>VoiceMeeter Input</strong>. PermadB limits it to your safe ceiling and injects into your headphones, while unselected apps (Brave, Spotify, games) blast at 100% full scale with zero ducking!
+              </div>
+            </div>
+          )}
+
           {/* Custom process adder */}
           <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', marginBottom: '1rem', alignItems: 'center' }}>
             <button

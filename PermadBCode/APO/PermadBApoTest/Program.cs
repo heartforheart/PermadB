@@ -128,6 +128,71 @@ class Program
         Console.WriteLine("==========================================================");
         Console.WriteLine("          PermadB Limiter APO - Phase 1 Verification");
         Console.WriteLine("==========================================================");
+
+        var testEnum = new MMDeviceEnumerator();
+        Console.WriteLine("[ALL DEVICES LIST]");
+        MMDevice? vmDevice = null;
+        MMDevice? hyperXDevice = null;
+
+        foreach (var d in testEnum.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.All))
+        {
+            try
+            {
+                Console.WriteLine($"  {d.State} (0x{(int)d.State:X8}): {d.FriendlyName} ({d.ID})");
+                if (d.ID.Contains("e2b7e35a") && d.State == DeviceState.Active)
+                {
+                    vmDevice = d;
+                }
+                if (d.ID.Contains("2e6d581f") && d.State == DeviceState.Active)
+                {
+                    hyperXDevice = d;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"  {d.State}: [Error reading name: {ex.Message}] ({d.ID})");
+            }
+        }
+        Console.WriteLine();
+
+        if (vmDevice != null && hyperXDevice != null)
+        {
+            Console.WriteLine("[BRIDGE TEST] Testing WasapiLoopbackCapture on VoiceMeeter Input...");
+            try
+            {
+                using var capture = new WasapiLoopbackCapture(vmDevice);
+                Console.WriteLine($"[BRIDGE TEST] Capture format: {capture.WaveFormat.SampleRate}Hz, {capture.WaveFormat.Channels}ch, {capture.WaveFormat.BitsPerSample}bit");
+                capture.DataAvailable += (s, a) => { };
+                capture.StartRecording();
+                Thread.Sleep(200);
+                capture.StopRecording();
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine("[BRIDGE TEST] WasapiLoopbackCapture on VoiceMeeter Input SUCCEEDED!");
+                Console.ResetColor();
+
+                Console.WriteLine("[BRIDGE TEST] Testing WasapiOut on HyperX Cloud III Wireless...");
+                using var outDev = new WasapiOut(hyperXDevice, AudioClientShareMode.Shared, false, 20);
+                var silence = new BufferedWaveProvider(capture.WaveFormat);
+                outDev.Init(silence);
+                outDev.Play();
+                Thread.Sleep(200);
+                outDev.Stop();
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine("[BRIDGE TEST] WasapiOut on HyperX Cloud III Wireless SUCCEEDED!");
+                Console.ResetColor();
+            }
+            catch (Exception ex)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"[BRIDGE TEST] Bridge test FAILED: {ex.GetType().Name} - {ex.Message}");
+                Console.ResetColor();
+            }
+        }
+        else
+        {
+            Console.WriteLine($"[BRIDGE TEST] Devices missing: vmDevice={vmDevice != null}, hyperXDevice={hyperXDevice != null}");
+        }
+        Console.WriteLine();
         Console.WriteLine();
 
         bool allPassed = true;
