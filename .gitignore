@@ -34,3 +34,7 @@ installer/uninstaller/publish/
 Thumbs.db
 Desktop.ini
 $RECYCLE.BIN/
+
+# Agent documentation
+FORAGENTS.md
+foragents.md
