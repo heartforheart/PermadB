@@ -8,7 +8,6 @@ echo [1/5] Compiling PermadB Limiter APO (MSVC x64)...
 call "%~dp0PermadBCode\APO\build_apo.bat"
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] APO build failed!
-    pause
     exit /b %ERRORLEVEL%
 )
 
@@ -18,7 +17,6 @@ cd /d "%~dp0PermadBCode\UI"
 call npm run build
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] UI build failed!
-    pause
     exit /b %ERRORLEVEL%
 )
 
@@ -28,7 +26,6 @@ cd /d "%~dp0PermadBCode\App"
 dotnet publish PermadB.csproj -c Release -r win-x64 --self-contained false -o "%~dp0dist"
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Application compilation failed!
-    pause
     exit /b %ERRORLEVEL%
 )
 copy /y "%~dp0PermadBCode\APO\PermadBApo.dll" "%~dp0dist\PermadBApo.dll" >nul
@@ -50,7 +47,6 @@ cd /d "%~dp0installer\uninstaller"
 dotnet publish PermadB-Uninstaller.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o "%~dp0dist"
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Uninstaller compilation failed!
-    pause
     exit /b %ERRORLEVEL%
 )
 

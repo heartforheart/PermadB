@@ -527,7 +527,7 @@ public static class InstallerEngine
                             }
                             fxKey.SetValue(pkeyLfx, clsidSfx, RegistryValueKind.String);
 
-                            // 1. Configure SFX (Pre-Mix Stream Effect)
+                            // 1. Configure SFX (Pre-Mix Stream Effect) - Sole entry to prevent OEM DTS chain drops
                             var existingSfx = fxKey.GetValue(pkeySfx) as string;
                             if (!string.IsNullOrEmpty(existingSfx) && !string.Equals(existingSfx, clsidSfx, StringComparison.OrdinalIgnoreCase))
                             {
@@ -541,51 +541,19 @@ public static class InstallerEngine
                             var existingCompSfx = fxKey.GetValue(pkeyCompositeSfx) as string[];
                             if (existingCompSfx != null && existingCompSfx.Length > 0)
                             {
-                                if (!existingCompSfx.Any(s => string.Equals(s, clsidSfx, StringComparison.OrdinalIgnoreCase)))
+                                var oemSfx = existingCompSfx.Where(s => !string.Equals(s, clsidSfx, StringComparison.OrdinalIgnoreCase)).ToArray();
+                                if (oemSfx.Length > 0 && fxKey.GetValue("PermadB_Backup_CompositeSFX") == null)
                                 {
-                                    if (fxKey.GetValue("PermadB_Backup_CompositeSFX") == null)
-                                    {
-                                        fxKey.SetValue("PermadB_Backup_CompositeSFX", existingCompSfx, RegistryValueKind.MultiString);
-                                    }
-                                    var newCompSfx = existingCompSfx.Append(clsidSfx).ToArray();
-                                    fxKey.SetValue(pkeyCompositeSfx, newCompSfx, RegistryValueKind.MultiString);
+                                    fxKey.SetValue("PermadB_Backup_CompositeSFX", existingCompSfx, RegistryValueKind.MultiString);
                                 }
                             }
-                            else
-                            {
-                                fxKey.SetValue("PermadB_Created_CompositeSFX", 1, RegistryValueKind.DWord);
-                                fxKey.SetValue(pkeyCompositeSfx, new string[] { clsidSfx }, RegistryValueKind.MultiString);
-                            }
+                            fxKey.SetValue(pkeyCompositeSfx, new string[] { clsidSfx }, RegistryValueKind.MultiString);
 
-                            // 1b. Configure MFX (Pre-Mix Mode Effect)
-                            var existingMfx = fxKey.GetValue(pkeyMfx) as string;
-                            if (!string.IsNullOrEmpty(existingMfx) && !string.Equals(existingMfx, clsidSfx, StringComparison.OrdinalIgnoreCase))
-                            {
-                                if (fxKey.GetValue("PermadB_Backup_MFX") == null)
-                                {
-                                    fxKey.SetValue("PermadB_Backup_MFX", existingMfx, RegistryValueKind.String);
-                                }
-                            }
-                            fxKey.SetValue(pkeyMfx, clsidSfx, RegistryValueKind.String);
-
-                            var existingCompMfx = fxKey.GetValue(pkeyCompositeMfx) as string[];
-                            if (existingCompMfx != null && existingCompMfx.Length > 0)
-                            {
-                                if (!existingCompMfx.Any(s => string.Equals(s, clsidSfx, StringComparison.OrdinalIgnoreCase)))
-                                {
-                                    if (fxKey.GetValue("PermadB_Backup_CompositeMFX") == null)
-                                    {
-                                        fxKey.SetValue("PermadB_Backup_CompositeMFX", existingCompMfx, RegistryValueKind.MultiString);
-                                    }
-                                    var newCompMfx = existingCompMfx.Append(clsidSfx).ToArray();
-                                    fxKey.SetValue(pkeyCompositeMfx, newCompMfx, RegistryValueKind.MultiString);
-                                }
-                            }
-                            else
-                            {
-                                fxKey.SetValue("PermadB_Created_CompositeMFX", 1, RegistryValueKind.DWord);
-                                fxKey.SetValue(pkeyCompositeMfx, new string[] { clsidSfx }, RegistryValueKind.MultiString);
-                            }
+                            // 1b. Clean up MFX: MFX runs post-mode-mix, which sums all apps together and causes cross-app bleeding!
+                            try { fxKey.DeleteValue(pkeyMfx, false); } catch { }
+                            try { fxKey.DeleteValue(pkeyCompositeMfx, false); } catch { }
+                            try { fxKey.DeleteValue(pkeyMfxModes, false); } catch { }
+                            try { fxKey.DeleteValue("PermadB_Created_CompositeMFX", false); } catch { }
 
                             // 2. Configure Legacy GFX (Global Effect)
                             var existingGfx = fxKey.GetValue(pkeyGfx) as string;
@@ -629,7 +597,7 @@ public static class InstallerEngine
                                 fxKey.SetValue(pkeyCompositeEfx, new string[] { clsidEfx }, RegistryValueKind.MultiString);
                             }
 
-                            // 4. Configure Processing Modes for SFX, MFX, and EFX
+                            // 4. Configure Processing Modes for SFX and EFX
                             var existingSfxModes = fxKey.GetValue(pkeySfxModes) as string[];
                             if (existingSfxModes != null && existingSfxModes.Length > 0)
                             {
@@ -639,17 +607,6 @@ public static class InstallerEngine
                             else
                             {
                                 fxKey.SetValue(pkeySfxModes, targetModes, RegistryValueKind.MultiString);
-                            }
-
-                            var existingMfxModes = fxKey.GetValue(pkeyMfxModes) as string[];
-                            if (existingMfxModes != null && existingMfxModes.Length > 0)
-                            {
-                                var mergedMfxModes = existingMfxModes.Union(targetModes, StringComparer.OrdinalIgnoreCase).ToArray();
-                                fxKey.SetValue(pkeyMfxModes, mergedMfxModes, RegistryValueKind.MultiString);
-                            }
-                            else
-                            {
-                                fxKey.SetValue(pkeyMfxModes, targetModes, RegistryValueKind.MultiString);
                             }
 
                             var existingEfxModes = fxKey.GetValue(pkeyEfxModes) as string[];

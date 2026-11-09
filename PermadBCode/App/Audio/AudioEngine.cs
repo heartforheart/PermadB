@@ -250,6 +250,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
     // Process name and peak tracking for active WASAPI audio sessions
     private readonly ConcurrentDictionary<int, string> _processNameCache = new();
     private readonly ConcurrentDictionary<string, float> _appSmoothedPeak = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, List<int>> _appProcessIds = new(StringComparer.OrdinalIgnoreCase);
     private DateTime _lastProtectedAudioTime = DateTime.MinValue;
     private DateTime _lastProtectedSpikeTime = DateTime.MinValue;
     private DateTime _lastBypassedAudioTime = DateTime.MinValue;
@@ -890,21 +891,36 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                     var lfx = key.GetValue(pkeyLfx) as string;
                     if (!string.Equals(lfx, clsidSfx, StringComparison.OrdinalIgnoreCase))
                     {
+                        if (!string.IsNullOrEmpty(lfx) && key.GetValue("PermadB_Backup_LFX") == null)
+                        {
+                            key.SetValue("PermadB_Backup_LFX", lfx, RegistryValueKind.String);
+                        }
                         key.SetValue(pkeyLfx, clsidSfx, RegistryValueKind.String);
                     }
 
-                    // 1. Configure SFX (Pre-Mix Stream Effect APO)
+                    // 1. Configure SFX (Pre-Mix Stream Effect APO) - Sole entry to prevent OEM DTS chain drops
                     var sfx = key.GetValue(pkeySfx) as string;
                     if (!string.Equals(sfx, clsidSfx, StringComparison.OrdinalIgnoreCase))
                     {
+                        if (!string.IsNullOrEmpty(sfx) && key.GetValue("PermadB_Backup_SFX") == null)
+                        {
+                            key.SetValue("PermadB_Backup_SFX", sfx, RegistryValueKind.String);
+                        }
                         key.SetValue(pkeySfx, clsidSfx, RegistryValueKind.String);
                     }
 
                     var compSfx = key.GetValue(pkeyCompositeSfx) as string[];
-                    if (compSfx == null || !compSfx.Contains(clsidSfx, StringComparer.OrdinalIgnoreCase))
+                    if (compSfx != null && compSfx.Length > 0)
                     {
-                        var newCompSfx = compSfx == null ? new[] { clsidSfx } : compSfx.Append(clsidSfx).ToArray();
-                        key.SetValue(pkeyCompositeSfx, newCompSfx, RegistryValueKind.MultiString);
+                        var oemSfx = compSfx.Where(s => !string.Equals(s, clsidSfx, StringComparison.OrdinalIgnoreCase)).ToArray();
+                        if (oemSfx.Length > 0 && key.GetValue("PermadB_Backup_CompositeSFX") == null)
+                        {
+                            key.SetValue("PermadB_Backup_CompositeSFX", compSfx, RegistryValueKind.MultiString);
+                        }
+                    }
+                    if (compSfx == null || compSfx.Length != 1 || !string.Equals(compSfx[0], clsidSfx, StringComparison.OrdinalIgnoreCase))
+                    {
+                        key.SetValue(pkeyCompositeSfx, new[] { clsidSfx }, RegistryValueKind.MultiString);
                     }
 
                     var sfxModes = key.GetValue(pkeySfxModes) as string[];
@@ -932,29 +948,11 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                         key.SetValue(pkeySfxModes, sfxModes.Union(targetModes, StringComparer.OrdinalIgnoreCase).ToArray(), RegistryValueKind.MultiString);
                     }
 
-                    // 1b. Configure MFX (Pre-Mix Mode Effect APO)
-                    var mfx = key.GetValue(pkeyMfx) as string;
-                    if (!string.Equals(mfx, clsidSfx, StringComparison.OrdinalIgnoreCase))
-                    {
-                        key.SetValue(pkeyMfx, clsidSfx, RegistryValueKind.String);
-                    }
-
-                    var compMfx = key.GetValue(pkeyCompositeMfx) as string[];
-                    if (compMfx == null || !compMfx.Contains(clsidSfx, StringComparer.OrdinalIgnoreCase))
-                    {
-                        var newCompMfx = compMfx == null ? new[] { clsidSfx } : compMfx.Append(clsidSfx).ToArray();
-                        key.SetValue(pkeyCompositeMfx, newCompMfx, RegistryValueKind.MultiString);
-                    }
-
-                    var mfxModes = key.GetValue(pkeyMfxModes) as string[];
-                    if (mfxModes == null || mfxModes.Length == 0)
-                    {
-                        key.SetValue(pkeyMfxModes, targetModes, RegistryValueKind.MultiString);
-                    }
-                    else if (!targetModes.All(m => mfxModes.Contains(m, StringComparer.OrdinalIgnoreCase)))
-                    {
-                        key.SetValue(pkeyMfxModes, mfxModes.Union(targetModes, StringComparer.OrdinalIgnoreCase).ToArray(), RegistryValueKind.MultiString);
-                    }
+                    // 1b. Clean up MFX: MFX is post-mode-mix (sums all apps together before processing), which causes cross-app bleeding!
+                    try { key.DeleteValue(pkeyMfx, false); } catch { }
+                    try { key.DeleteValue(pkeyCompositeMfx, false); } catch { }
+                    try { key.DeleteValue(pkeyMfxModes, false); } catch { }
+                    try { key.DeleteValue("PermadB_Created_CompositeMFX", false); } catch { }
 
                     // 2. Configure Legacy GFX (Endpoint / Global Effect APO)
                     var gfx = key.GetValue(pkeyGfx) as string;
@@ -1031,34 +1029,46 @@ public class AudioEngine : IMMNotificationClient, IDisposable
             {
                 _virtualBridge.UpdateCeiling(GetActivePresetLinearCeiling());
 
-                // Smart Master EFX Coordination in App-Specific Mode:
-                // Only consider apps with genuine audible output (> 0.003f) and exclude "System Sounds"
-                var audibleAudio = _cachedAppSessions
-                    .Where(s => s.PeakValue > 0.003f && !s.ProcessName.Equals("System Sounds", StringComparison.OrdinalIgnoreCase))
-                    .ToList();
-                bool anyProtectedAudible = audibleAudio.Any(s => IsAppProtected(s.ProcessName));
-                bool anyBypassedAudible = audibleAudio.Any(s => !IsAppProtected(s.ProcessName));
+                // Read real-time sfxActiveCount from APO telemetry
+                uint sfxCount = 0;
+                if (_telemetryAcc != null)
+                {
+                    try
+                    {
+                        int offsetSfxCount = (int)Marshal.OffsetOf<PermadBApoTelemetry>(nameof(PermadBApoTelemetry.SfxActiveCount));
+                        sfxCount = _telemetryAcc.ReadUInt32(offsetSfxCount);
+                    }
+                    catch { }
+                }
 
-                // INVARIANT: In App-Specific Mode, if ANY Bypassed app (e.g. Brave) is audible,
-                // Master EFX MUST NOT clamp! Clamping post-mix would crush the bypassed audio.
-                // Master EFX relaxes to -1.0 dBFS so Bypassed apps play completely un-limited.
-                // Limiting for Protected apps is handled strictly at the stream level (SFX/MFX).
-                if (anyBypassedAudible)
+                // INVARIANT: In App-Specific Mode, each stream is limited independently pre-mix in SFX.
+                // 1. If SFX instances are active (sfxCount > 0), Master EFX MUST ALWAYS stay relaxed at -1.0 dBFS (0.8913)
+                //    so bypassed apps (Brave, Spotify, games) are NEVER clamped post-mix!
+                if (sfxCount > 0)
                 {
                     linear = 0.8912509f;
                     dbfs = -1.0f;
-                }
-                else if (anyProtectedAudible)
-                {
-                    // Only Protected apps (e.g. Discord alone) are audible; clamp Master EFX as a failsafe
-                    linear = GetActivePresetLinearCeiling();
-                    dbfs = 20.0f * (float)Math.Log10(linear);
                 }
                 else
                 {
-                    // Silence / idle: relax to -1.0 dBFS
-                    linear = 0.8912509f;
-                    dbfs = -1.0f;
+                    // 2. Fallback when sfxCount == 0: Master EFX only clamps if a Limited app is genuinely audible (> 0.005f)
+                    //    AND NO Bypassed app is audible (> 0.005f). If ANY Bypassed app is playing, NEVER clamp Master EFX!
+                    var audibleAudio = _cachedAppSessions
+                        .Where(s => s.PeakValue > 0.005f && !s.ProcessName.Equals("System Sounds", StringComparison.OrdinalIgnoreCase))
+                        .ToList();
+                    bool anyProtectedAudible = audibleAudio.Any(s => IsAppProtected(s.ProcessName));
+                    bool anyBypassedAudible = audibleAudio.Any(s => !IsAppProtected(s.ProcessName));
+
+                    if (anyProtectedAudible && !anyBypassedAudible)
+                    {
+                        linear = GetActivePresetLinearCeiling();
+                        dbfs = 20.0f * (float)Math.Log10(linear);
+                    }
+                    else
+                    {
+                        linear = 0.8912509f;
+                        dbfs = -1.0f;
+                    }
                 }
             }
 
@@ -1168,6 +1178,14 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                     if (s.MatchedProcessId > 0)
                     {
                         var matchingSession = activeSessions.FirstOrDefault(sess => sess.ProcessId == (int)s.MatchedProcessId);
+                        if (matchingSession == null)
+                        {
+                            var appKey = _appProcessIds.FirstOrDefault(kvp => kvp.Value.Contains((int)s.MatchedProcessId)).Key;
+                            if (!string.IsNullOrEmpty(appKey))
+                            {
+                                matchingSession = activeSessions.FirstOrDefault(sess => NormalizeProcessName(sess.ProcessName) == appKey);
+                            }
+                        }
                         // Stale binding detection: if the session no longer exists or is silent (<= 0.002f) while this slot is active (> 0.005f)
                         if (matchingSession == null || (matchingSession.PeakValue <= 0.002f && s.InputPeak > 0.005f))
                         {
@@ -1297,6 +1315,17 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                     {
                         var matchedSession = activeSessions.FirstOrDefault(s => s.ProcessId == (int)matchedPid);
                         string procName = matchedSession?.ProcessName ?? string.Empty;
+                        if (string.IsNullOrEmpty(procName))
+                        {
+                            foreach (var kvp in _appProcessIds)
+                            {
+                                if (kvp.Value.Contains((int)matchedPid))
+                                {
+                                    procName = kvp.Key;
+                                    break;
+                                }
+                            }
+                        }
                         if (string.IsNullOrEmpty(procName))
                         {
                             try
@@ -1523,6 +1552,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                                 int hrCount = sessionEnum.GetCount(out int sessionCount);
                                 if (hrCount == 0 && sessionCount > 0)
                                 {
+                                    var rawSessions = new List<(uint Pid, string ProcName, string DisplayName, float Vol, bool Mute, float RawPeak)>();
                                     for (int i = 0; i < sessionCount; i++)
                                     {
                                         int hrS = sessionEnum.GetSession(i, out var s);
@@ -1571,75 +1601,102 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                                                     appMeter.GetPeakValue(out rawAppPeak);
                                                 }
 
-                                                var smoothedPeak = _appSmoothedPeak.AddOrUpdate(
-                                                    procName,
-                                                    rawAppPeak,
-                                                    (_, prev) => Math.Max(rawAppPeak, prev * 0.75f + rawAppPeak * 0.25f)
-                                                );
-
-                                                var appPeakDbfs = smoothedPeak > 0.00001f ? 20.0f * (float)Math.Log10(smoothedPeak) : -96.0f;
-                                                bool isVoip = CommunicationApps.Contains(procName);
-                                                float crestFactor = isVoip ? 15.0f : 11.0f;
-                                                var appEstPeakSpl = Math.Clamp(profile.EstimatedMaxDbSpl + appPeakDbfs + masterDbAtten, 25.0f, 120.0f);
-                                                var appEstContinuousSpl = Math.Clamp(appEstPeakSpl - crestFactor, 25.0f, 105.0f);
-
-                                                bool isProt = IsAppProtected(procName);
-                                                bool isAppClamped = false;
-
-                                                // Clean noise gate: 0.005f (-46 dBFS) ignores DAC dither and idle mic silence
-                                                bool isAppActive = rawAppPeak > 0.005f || smoothedPeak > 0.005f;
-                                                bool isAppSpike = appEstContinuousSpl > profile.TargetSafeDbSpl || rawAppPeak > 0.35f;
-
-                                                if (isAppActive)
-                                                {
-                                                    if (isProt)
-                                                    {
-                                                        _lastProtectedAudioTime = DateTime.UtcNow;
-                                                        if (isAppSpike)
-                                                        {
-                                                            _lastProtectedSpikeTime = DateTime.UtcNow;
-                                                        }
-                                                    }
-                                                    else if (pid > 0 && !procName.Equals("System Sounds", StringComparison.OrdinalIgnoreCase))
-                                                    {
-                                                        _lastBypassedAudioTime = DateTime.UtcNow;
-                                                    }
-                                                }
-
-                                                // INVARIANT: PermadB NEVER modifies Windows Volume Mixer sliders (s.SimpleAudioVolume.Volume).
-                                                // All digital limiting is executed deterministically on raw PCM inside audiodg.exe via PermadBApo.dll.
-                                                if (_config.Settings.Enabled)
-                                                {
-                                                    if (_config.Settings.AppFilteringEnabled)
-                                                    {
-                                                        isAppClamped = isProt && isAppActive && isClamping;
-                                                    }
-                                                    else
-                                                    {
-                                                        isAppClamped = isClamping;
-                                                    }
-                                                }
-
-                                                appSessionsList.Add(new AppSessionInfo
-                                                {
-                                                    ProcessId = (int)pid,
-                                                    ProcessName = procName,
-                                                    DisplayName = string.IsNullOrWhiteSpace(displayName) ? procName : displayName,
-                                                    VolumePercent = (float)Math.Round(appVol * 100.0f, 1),
-                                                    PeakValue = (float)Math.Round(smoothedPeak, 3),
-                                                    PeakDbfs = (float)Math.Round(appPeakDbfs, 1),
-                                                    EstimatedDbSpl = (float)Math.Round(appEstContinuousSpl, 1),
-                                                    IsMuted = appMute,
-                                                    IsClamped = isAppClamped,
-                                                    IsProtected = isProt,
-                                                    IsUnsafe = appEstContinuousSpl > profile.TargetSafeDbSpl
-                                                });
+                                                rawSessions.Add((pid, procName, displayName, appVol, appMute, rawAppPeak));
                                             }
                                             finally
                                             {
                                                 Marshal.ReleaseComObject(s);
                                             }
                                         }
+                                    }
+
+                                    // Group sessions by normalized process name so multi-session apps (e.g. Brave, Chrome, Discord)
+                                    // consolidate all their tabs into ONE entry with the MAXIMUM peak across all sessions!
+                                    var groupedSessions = rawSessions
+                                        .GroupBy(r => NormalizeProcessName(r.ProcName), StringComparer.OrdinalIgnoreCase)
+                                        .ToList();
+
+                                    foreach (var group in groupedSessions)
+                                    {
+                                        string normName = group.Key;
+                                        if (string.IsNullOrWhiteSpace(normName)) continue;
+
+                                        // Take the MAXIMUM peak across all sessions so silent background tabs NEVER dilute active audio
+                                        float maxRawPeak = group.Max(r => r.RawPeak);
+                                        float maxVol = group.Max(r => r.Vol);
+                                        bool isMute = group.All(r => r.Mute);
+
+                                        var primary = group.OrderByDescending(r => r.RawPeak).First();
+                                        string procName = primary.ProcName;
+                                        var named = group.FirstOrDefault(r => !string.IsNullOrWhiteSpace(r.DisplayName));
+                                        string displayName = !string.IsNullOrWhiteSpace(named.DisplayName) ? named.DisplayName : procName;
+                                        uint primaryPid = primary.Pid;
+
+                                        // Store all PIDs belonging to this application
+                                        var allPids = group.Select(r => (int)r.Pid).Where(p => p > 0).Distinct().ToList();
+                                        _appProcessIds[normName] = allPids;
+
+                                        var smoothedPeak = _appSmoothedPeak.AddOrUpdate(
+                                            normName,
+                                            maxRawPeak,
+                                            (_, prev) => Math.Max(maxRawPeak, prev * 0.75f + maxRawPeak * 0.25f)
+                                        );
+
+                                        var appPeakDbfs = smoothedPeak > 0.00001f ? 20.0f * (float)Math.Log10(smoothedPeak) : -96.0f;
+                                        bool isVoip = CommunicationApps.Contains(procName);
+                                        float crestFactor = isVoip ? 15.0f : 11.0f;
+                                        var appEstPeakSpl = Math.Clamp(profile.EstimatedMaxDbSpl + appPeakDbfs + masterDbAtten, 25.0f, 120.0f);
+                                        var appEstContinuousSpl = Math.Clamp(appEstPeakSpl - crestFactor, 25.0f, 105.0f);
+
+                                        bool isProt = IsAppProtected(normName);
+                                        bool isAppClamped = false;
+
+                                        // Clean noise gate: 0.005f (-46 dBFS) ignores DAC dither and idle mic silence
+                                        bool isAppActive = maxRawPeak > 0.005f || smoothedPeak > 0.005f;
+                                        bool isAppSpike = appEstContinuousSpl > profile.TargetSafeDbSpl || maxRawPeak > 0.35f;
+
+                                        if (isAppActive)
+                                        {
+                                            if (isProt)
+                                            {
+                                                _lastProtectedAudioTime = DateTime.UtcNow;
+                                                if (isAppSpike)
+                                                {
+                                                    _lastProtectedSpikeTime = DateTime.UtcNow;
+                                                }
+                                            }
+                                            else if (primaryPid > 0 && !normName.Equals("system sounds", StringComparison.OrdinalIgnoreCase))
+                                            {
+                                                _lastBypassedAudioTime = DateTime.UtcNow;
+                                            }
+                                        }
+
+                                        if (_config.Settings.Enabled)
+                                        {
+                                            if (_config.Settings.AppFilteringEnabled)
+                                            {
+                                                isAppClamped = isProt && isAppActive && isClamping;
+                                            }
+                                            else
+                                            {
+                                                isAppClamped = isClamping;
+                                            }
+                                        }
+
+                                        appSessionsList.Add(new AppSessionInfo
+                                        {
+                                            ProcessId = (int)primaryPid,
+                                            ProcessName = procName,
+                                            DisplayName = string.IsNullOrWhiteSpace(displayName) ? procName : displayName,
+                                            VolumePercent = (float)Math.Round(maxVol * 100.0f, 1),
+                                            PeakValue = (float)Math.Round(smoothedPeak, 3),
+                                            PeakDbfs = (float)Math.Round(appPeakDbfs, 1),
+                                            EstimatedDbSpl = (float)Math.Round(appEstContinuousSpl, 1),
+                                            IsMuted = isMute,
+                                            IsClamped = isAppClamped,
+                                            IsProtected = isProt,
+                                            IsUnsafe = appEstContinuousSpl > profile.TargetSafeDbSpl
+                                        });
                                     }
                                 }
                             }
@@ -1668,7 +1725,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                     if ((now - _lastLogTick).TotalSeconds >= 3.0)
                     {
                         _lastLogTick = now;
-                        var summaries = appSessionsList.Select(x => $"{x.ProcessName}(v={x.VolumePercent:F0}%,pk={x.PeakValue:F2},prot={x.IsProtected},clmp={x.IsClamped})");
+                        var summaries = appSessionsList.Select(x => $"{x.ProcessName}(pk={x.PeakValue:F3},{(x.IsProtected ? "Limited" : "Bypassed")}{(x.IsClamped ? ",clmp" : "")})");
                         float apoDbfs = _lastSentCeilingLinear > 0.0001f ? 20.0f * (float)Math.Log10(_lastSentCeilingLinear) : -96.0f;
                         string bridgeStatus = _virtualBridge.IsActive ? $"ACTIVE(GR={_virtualBridge.CurrentGainReductionDb:F1}dB,act={_virtualBridge.LimiterActivations})" : "OFF";
                         uint sfxCount = hasApoTelemetry ? telem.SfxActiveCount : 0;
