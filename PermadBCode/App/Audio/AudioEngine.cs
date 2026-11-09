@@ -172,8 +172,8 @@ public class AudioEngine : IMMNotificationClient, IDisposable
     // Process name and peak tracking for active WASAPI audio sessions
     private readonly ConcurrentDictionary<int, string> _processNameCache = new();
     private readonly ConcurrentDictionary<string, float> _appSmoothedPeak = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentDictionary<string, float> _savedOriginalVolume = new(StringComparer.OrdinalIgnoreCase);
     private DateTime _lastProtectedAudioTime = DateTime.MinValue;
+    private DateTime _lastProtectedSpikeTime = DateTime.MinValue;
     private DateTime _lastBypassedAudioTime = DateTime.MinValue;
     private DateTime _lastLogTick = DateTime.MinValue;
 
@@ -838,11 +838,46 @@ public class AudioEngine : IMMNotificationClient, IDisposable
             if (_config.Settings.AppFilteringEnabled && isEnabled)
             {
                 // In App-Specific Limiting mode:
-                // Protected applications (e.g. Discord) are bounded directly at their individual session level.
-                // The Master APO runs in transparent peak-limiter mode (-1.0 dBFS / 0.8912 linear) so bypassed
-                // applications (Brave, Spotify, YouTube) blast at 100% full scale without being ducked or cross-affected!
-                linear = 0.8912509f;
-                dbfs = -1.0f;
+                // 1. If only protected app(s) (e.g. Discord) are producing audio:
+                //    The Master APO enforces the calibrated safe preset ceiling (e.g. 75 dBA Safe Mode = -16.0 dBFS).
+                // 2. If bypassed app(s) (e.g. Brave, Spotify) are active AND no protected app is spiking:
+                //    The Master APO runs in transparent peak-limiter mode (-1.0 dBFS / 0.8912 linear) so music blasts at 100%!
+                // 3. If bypassed app(s) are active AND a protected app has a loud spike (screamer/mic clip):
+                //    The Master APO immediately clamps to the safe ceiling for the duration of the spike!
+                // 4. Idle / silence:
+                //    Transparent peak-limiter mode (-1.0 dBFS).
+                bool isBypassedAppActive = (DateTime.UtcNow - _lastBypassedAudioTime).TotalMilliseconds < 1200;
+                bool isProtectedAppActive = (DateTime.UtcNow - _lastProtectedAudioTime).TotalMilliseconds < 1200;
+                bool isProtectedSpikeActive = (DateTime.UtcNow - _lastProtectedSpikeTime).TotalMilliseconds < 1200;
+
+                if (isBypassedAppActive)
+                {
+                    if (isProtectedSpikeActive)
+                    {
+                        // Protected application had a loud burst/spike while music was playing:
+                        // Clamp to calibrated safe preset ceiling to protect hearing!
+                        // linear remains GetActivePresetLinearCeiling()
+                    }
+                    else
+                    {
+                        // Music is blasting and Discord is normal or silent:
+                        // Transparent peak limiter mode (-1.0 dBFS)
+                        linear = 0.8912509f;
+                        dbfs = -1.0f;
+                    }
+                }
+                else if (isProtectedAppActive)
+                {
+                    // Only protected application(s) (e.g. Discord) are active:
+                    // Enforce calibrated safe preset ceiling!
+                    // linear remains GetActivePresetLinearCeiling()
+                }
+                else
+                {
+                    // Idle desktop: transparent mode
+                    linear = 0.8912509f;
+                    dbfs = -1.0f;
+                }
             }
 
             int enabledInt = isEnabled ? 1 : 0;
@@ -1116,11 +1151,17 @@ public class AudioEngine : IMMNotificationClient, IDisposable
 
                                                 // Clean noise gate: 0.005f (-46 dBFS) ignores DAC dither and idle mic silence
                                                 bool isAppActive = rawAppPeak > 0.005f || smoothedPeak > 0.005f;
+                                                bool isAppSpike = appEstContinuousSpl > profile.TargetSafeDbSpl || rawAppPeak > 0.35f;
+
                                                 if (isAppActive)
                                                 {
                                                     if (isProt)
                                                     {
                                                         _lastProtectedAudioTime = DateTime.UtcNow;
+                                                        if (isAppSpike)
+                                                        {
+                                                            _lastProtectedSpikeTime = DateTime.UtcNow;
+                                                        }
                                                     }
                                                     else if (pid > 0 && !procName.Equals("System Sounds", StringComparison.OrdinalIgnoreCase))
                                                     {
@@ -1128,38 +1169,18 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                                                     }
                                                 }
 
-                                                float ceilingScalar = Math.Clamp(profile.SafeCeilingPercent / 100.0f, 0.05f, 1.0f);
-
-                                                if (_config.Settings.Enabled && _config.Settings.AppFilteringEnabled && isProt)
+                                                // INVARIANT: PermadB NEVER modifies Windows Volume Mixer sliders (s.SimpleAudioVolume.Volume).
+                                                // All digital limiting is executed deterministically on raw PCM inside audiodg.exe via PermadBApo.dll.
+                                                if (_config.Settings.Enabled)
                                                 {
-                                                    // Protected app in App-Specific Mode (e.g. Discord):
-                                                    // Strictly bound the app's individual volume slider to the safe ceiling scalar (e.g. 65%, 50%, or 30%)
-                                                    if (simpleVol != null)
+                                                    if (_config.Settings.AppFilteringEnabled)
                                                     {
-                                                        if (appVol > ceilingScalar + 0.01f)
-                                                        {
-                                                            _savedOriginalVolume.TryAdd(procName, appVol);
-                                                            simpleVol.SetMasterVolume(ceilingScalar, Guid.Empty);
-                                                            AppLogger.Log($"[CLAMP] {procName} (PID {pid}) volume clamped from {appVol:P0} to {ceilingScalar:P0}");
-                                                            appVol = ceilingScalar;
-                                                        }
+                                                        isAppClamped = isProt && isAppActive && isClamping;
                                                     }
-                                                    isAppClamped = true;
-                                                }
-                                                else if (_savedOriginalVolume.TryRemove(procName, out float savedVol))
-                                                {
-                                                    // App was switched to Bypassed or AppFiltering disabled: restore volume
-                                                    if (simpleVol != null)
+                                                    else
                                                     {
-                                                        float restoreVol = Math.Max(savedVol, 1.0f);
-                                                        simpleVol.SetMasterVolume(restoreVol, Guid.Empty);
-                                                        AppLogger.Log($"[RESTORE] {procName} (PID {pid}) volume restored from {appVol:P0} to {restoreVol:P0}");
-                                                        appVol = restoreVol;
+                                                        isAppClamped = isClamping;
                                                     }
-                                                }
-                                                else if (!_config.Settings.AppFilteringEnabled)
-                                                {
-                                                    isAppClamped = isClamping;
                                                 }
 
                                                 appSessionsList.Add(new AppSessionInfo
@@ -1210,7 +1231,8 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                     {
                         _lastLogTick = now;
                         var summaries = appSessionsList.Select(x => $"{x.ProcessName}(v={x.VolumePercent:F0}%,pk={x.PeakValue:F2},prot={x.IsProtected},clmp={x.IsClamped})");
-                        AppLogger.Log($"[HEARTBEAT] Mode={(_config.Settings.AppFilteringEnabled ? "AppSpecific" : "Master")}, Preset={_config.Settings.ActivePreset}({profile.SafeCeilingPercent:F0}%), MtrPeak={meterPeak:F2}, MtrVol={volScalar:P0}, Sessions=[{string.Join(", ", summaries)}]");
+                        float apoDbfs = _lastSentCeilingLinear > 0.0001f ? 20.0f * (float)Math.Log10(_lastSentCeilingLinear) : -96.0f;
+                        AppLogger.Log($"[HEARTBEAT] Mode={(_config.Settings.AppFilteringEnabled ? "AppSpecific" : "Master")}, Preset={_config.Settings.ActivePreset}({profile.SafeCeilingPercent:F0}%), APO={_lastSentCeilingLinear:F4}({apoDbfs:F1}dBFS), MtrPeak={meterPeak:F2}, MtrVol={volScalar:P0}, Sessions=[{string.Join(", ", summaries)}]");
                     }
                 }
                 catch { }
@@ -1284,43 +1306,6 @@ public class AudioEngine : IMMNotificationClient, IDisposable
     {
         try
         {
-            if (_savedOriginalVolume.Count > 0)
-            {
-                try
-                {
-                    var mgr2 = GetNativeSessionManager();
-                    if (mgr2 != null && mgr2.GetSessionEnumerator(out var sessionEnum) == 0 && sessionEnum != null)
-                    {
-                        try
-                        {
-                            if (sessionEnum.GetCount(out int sCount) == 0)
-                            {
-                                for (int i = 0; i < sCount; i++)
-                                {
-                                    if (sessionEnum.GetSession(i, out var s) == 0 && s != null)
-                                    {
-                                        try
-                                        {
-                                            if (s is IAudioSessionControl2 ctl2 && ctl2.GetProcessId(out uint pid) == 0 && pid > 0)
-                                            {
-                                                if (_processNameCache.TryGetValue((int)pid, out string? pName) && _savedOriginalVolume.TryGetValue(pName, out float orig))
-                                                {
-                                                    if (s is ISimpleAudioVolume v) v.SetMasterVolume(Math.Max(orig, 1.0f), Guid.Empty);
-                                                }
-                                            }
-                                        }
-                                        finally { Marshal.ReleaseComObject(s); }
-                                    }
-                                }
-                            }
-                        }
-                        finally { Marshal.ReleaseComObject(sessionEnum); }
-                    }
-                }
-                catch { }
-                _savedOriginalVolume.Clear();
-            }
-
             _telemetryAcc?.Dispose();
             _telemetryAcc = null;
             _telemetryMmf?.Dispose();

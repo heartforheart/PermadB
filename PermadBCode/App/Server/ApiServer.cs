@@ -297,6 +297,17 @@ public class ApiServer : IDisposable
                 return;
             }
 
+            if (path == "/api/exit" && req.HttpMethod == "POST")
+            {
+                await SendJson(res, new { success = true, message = "Exiting PermadB" });
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(250);
+                    Environment.Exit(0);
+                });
+                return;
+            }
+
             // Static File Serving
             await ServeStaticFile(path, res);
         }
