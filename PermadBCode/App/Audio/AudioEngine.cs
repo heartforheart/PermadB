@@ -228,6 +228,8 @@ public class AudioEngine : IMMNotificationClient, IDisposable
 
     // Virtual audio stream bridge for per-app stream separation
     private readonly VirtualStreamBridge _virtualBridge = new();
+    private readonly AudioPolicyConfigClient _policyConfigClient = new();
+    private string? _cachedVirtualSinkId;
 
     // Native WASAPI COM field reflection caches for zero-allocation, zero-leak session queries
     private static readonly FieldInfo? AsmField = typeof(AudioSessionManager).GetField("audioSessionInterface2", BindingFlags.NonPublic | BindingFlags.Instance);
@@ -443,15 +445,61 @@ public class AudioEngine : IMMNotificationClient, IDisposable
             {
                 float ceiling = GetActivePresetLinearCeiling();
                 _virtualBridge.Start(_enumerator, _activeDevice, ceiling);
+
+                var virtualSink = VirtualStreamBridge.FindVirtualSinkDevice(_enumerator);
+                if (virtualSink != null)
+                {
+                    _cachedVirtualSinkId = virtualSink.ID;
+                    SyncAppRouting(_cachedVirtualSinkId);
+                }
             }
             else
             {
                 _virtualBridge.Stop();
+                _policyConfigClient.ResetAllRedirectedApps();
             }
         }
         catch (Exception ex)
         {
             AppLogger.Log($"[AudioEngine] Error in InternalSyncVirtualBridge: {ex.Message}");
+        }
+    }
+
+    private void SyncAppRouting(string? virtualSinkId)
+    {
+        if (string.IsNullOrWhiteSpace(virtualSinkId) || !_config.Settings.AppFilteringEnabled || !_config.Settings.Enabled)
+        {
+            _policyConfigClient.ResetAllRedirectedApps();
+            return;
+        }
+
+        try
+        {
+            foreach (var kvp in _appProcessIds)
+            {
+                string normName = kvp.Key;
+                var pids = kvp.Value;
+                bool isProt = IsAppProtected(normName);
+
+                foreach (var pid in pids)
+                {
+                    if (pid <= 0) continue;
+                    uint uPid = (uint)pid;
+
+                    if (isProt)
+                    {
+                        _policyConfigClient.SetApplicationEndpoint(uPid, virtualSinkId);
+                    }
+                    else
+                    {
+                        _policyConfigClient.SetApplicationEndpoint(uPid, null);
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Log($"[AudioEngine] SyncAppRouting exception: {ex.Message}");
         }
     }
 
@@ -1029,47 +1077,13 @@ public class AudioEngine : IMMNotificationClient, IDisposable
             {
                 _virtualBridge.UpdateCeiling(GetActivePresetLinearCeiling());
 
-                // Read real-time sfxActiveCount from APO telemetry
-                uint sfxCount = 0;
-                if (_telemetryAcc != null)
-                {
-                    try
-                    {
-                        int offsetSfxCount = (int)Marshal.OffsetOf<PermadBApoTelemetry>(nameof(PermadBApoTelemetry.SfxActiveCount));
-                        sfxCount = _telemetryAcc.ReadUInt32(offsetSfxCount);
-                    }
-                    catch { }
-                }
-
-                // INVARIANT: In App-Specific Mode, each stream is limited independently pre-mix in SFX.
-                // 1. If SFX instances are active (sfxCount > 0), Master EFX MUST ALWAYS stay relaxed at -1.0 dBFS (0.8913)
-                //    so bypassed apps (Brave, Spotify, games) are NEVER clamped post-mix!
-                if (sfxCount > 0)
-                {
-                    linear = 0.8912509f;
-                    dbfs = -1.0f;
-                }
-                else
-                {
-                    // 2. Fallback when sfxCount == 0: Master EFX only clamps if a Limited app is genuinely audible (> 0.005f)
-                    //    AND NO Bypassed app is audible (> 0.005f). If ANY Bypassed app is playing, NEVER clamp Master EFX!
-                    var audibleAudio = _cachedAppSessions
-                        .Where(s => s.PeakValue > 0.005f && !s.ProcessName.Equals("System Sounds", StringComparison.OrdinalIgnoreCase))
-                        .ToList();
-                    bool anyProtectedAudible = audibleAudio.Any(s => IsAppProtected(s.ProcessName));
-                    bool anyBypassedAudible = audibleAudio.Any(s => !IsAppProtected(s.ProcessName));
-
-                    if (anyProtectedAudible && !anyBypassedAudible)
-                    {
-                        linear = GetActivePresetLinearCeiling();
-                        dbfs = 20.0f * (float)Math.Log10(linear);
-                    }
-                    else
-                    {
-                        linear = 0.8912509f;
-                        dbfs = -1.0f;
-                    }
-                }
+                // INVARIANT: In App-Specific Mode, streams are cleanly separated:
+                // Target Limited apps (Discord, Audacity) route via AudioPolicyConfig into VoiceMeeter Input,
+                // where VirtualStreamBridge applies the calibrated lookahead brickwall DSP limiter clamped to GetActivePresetLinearCeiling().
+                // Master EFX on the physical output (HyperX) MUST ALWAYS stay relaxed at -1.0 dBFS (0.8913)
+                // so that Bypassed apps (Brave, Spotify, games) play unconstrained at 100% full volume with ZERO ducking!
+                linear = 0.8912509f;
+                dbfs = -1.0f;
             }
 
             int enabledInt = isEnabled ? 1 : 0;
@@ -1636,6 +1650,24 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                                         var allPids = group.Select(r => (int)r.Pid).Where(p => p > 0).Distinct().ToList();
                                         _appProcessIds[normName] = allPids;
 
+                                        // Auto-route active sessions when App-Specific Mode is engaged
+                                        if (_config.Settings.AppFilteringEnabled && _config.Settings.Enabled && !string.IsNullOrWhiteSpace(_cachedVirtualSinkId))
+                                        {
+                                            bool isTargetProt = IsAppProtected(normName);
+                                            foreach (var p in allPids)
+                                            {
+                                                uint uP = (uint)p;
+                                                if (isTargetProt)
+                                                {
+                                                    _policyConfigClient.SetApplicationEndpoint(uP, _cachedVirtualSinkId);
+                                                }
+                                                else
+                                                {
+                                                    _policyConfigClient.SetApplicationEndpoint(uP, null);
+                                                }
+                                            }
+                                        }
+
                                         var smoothedPeak = _appSmoothedPeak.AddOrUpdate(
                                             normName,
                                             maxRawPeak,
@@ -1675,7 +1707,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                                         {
                                             if (_config.Settings.AppFilteringEnabled)
                                             {
-                                                isAppClamped = isProt && isAppActive && isClamping;
+                                                isAppClamped = isProt && isAppActive && (_virtualBridge.CurrentGainReductionDb > 0.05f || maxRawPeak > _virtualBridge.LinearCeiling);
                                             }
                                             else
                                             {
@@ -1821,6 +1853,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
             }
             _enumerator?.Dispose();
             _virtualBridge.Dispose();
+            _policyConfigClient.Dispose();
         }
         catch { }
     }
