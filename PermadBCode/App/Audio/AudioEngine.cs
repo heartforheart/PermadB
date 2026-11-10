@@ -1077,13 +1077,33 @@ public class AudioEngine : IMMNotificationClient, IDisposable
             {
                 _virtualBridge.UpdateCeiling(GetActivePresetLinearCeiling());
 
-                // INVARIANT: In App-Specific Mode, streams are cleanly separated:
-                // Target Limited apps (Discord, Audacity) route via AudioPolicyConfig into VoiceMeeter Input,
-                // where VirtualStreamBridge applies the calibrated lookahead brickwall DSP limiter clamped to GetActivePresetLinearCeiling().
-                // Master EFX on the physical output (HyperX) MUST ALWAYS stay relaxed at -1.0 dBFS (0.8913)
-                // so that Bypassed apps (Brave, Spotify, games) play unconstrained at 100% full volume with ZERO ducking!
-                linear = 0.8912509f;
-                dbfs = -1.0f;
+                // DUAL-LAYER DEFENSE IN APP-SPECIFIC MODE:
+                // Layer 1: Apps that follow Windows Default Audio Routing (Brave, Discord, Spotify, etc.)
+                //          route via AudioPolicyConfig to VoiceMeeter Input and are brickwall-clamped by VirtualStreamBridge.
+                // Layer 2: Legacy/hardcoded apps (e.g. Audacity configured with explicit MME device index)
+                //          that stream directly to Master (HyperX):
+                //          If a Limited app is audible on Master AND NO Bypassed app is audible, clamp Master EFX
+                //          to GetActivePresetLinearCeiling() to guarantee ear protection!
+                //          If a Bypassed app IS playing on Master, keep Master EFX relaxed at -1.0 dBFS (100% blast).
+                var audibleSessions = _cachedAppSessions
+                    .Where(s => s.PeakValue > 0.005f &&
+                                !s.ProcessName.Equals("System Sounds", StringComparison.OrdinalIgnoreCase) &&
+                                !s.ProcessName.Equals("PermadB", StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+                bool anyLimitedOnMaster = audibleSessions.Any(s => IsAppProtected(s.ProcessName));
+                bool anyBypassedOnMaster = audibleSessions.Any(s => !IsAppProtected(s.ProcessName));
+
+                if (anyLimitedOnMaster && !anyBypassedOnMaster)
+                {
+                    linear = GetActivePresetLinearCeiling();
+                    dbfs = 20.0f * (float)Math.Log10(linear);
+                }
+                else
+                {
+                    linear = 0.8912509f;
+                    dbfs = -1.0f;
+                }
             }
 
             int enabledInt = isEnabled ? 1 : 0;
