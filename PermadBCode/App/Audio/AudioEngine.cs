@@ -456,7 +456,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
             else
             {
                 _virtualBridge.Stop();
-                _policyConfigClient.ResetAllRedirectedApps();
+                _policyConfigClient.ClearAllApplicationEndpoints();
             }
         }
         catch (Exception ex)
@@ -811,8 +811,13 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                         profile.SafeCeilingPercent = 85.0f;
                         profile.TargetSafeDbSpl = 82.0f;
                         break;
+                    case "custom1":
                     case "custom":
-                        profile.SafeCeilingPercent = Math.Clamp(profile.SafeCeilingPercent, 10.0f, 100.0f);
+                        profile.SafeCeilingPercent = Math.Clamp(_config.Settings.Custom1PresetPercent, 10.0f, 100.0f);
+                        profile.TargetSafeDbSpl = 50.0f + (profile.SafeCeilingPercent / 100.0f) * 38.0f;
+                        break;
+                    case "custom2":
+                        profile.SafeCeilingPercent = Math.Clamp(_config.Settings.Custom2PresetPercent, 10.0f, 100.0f);
                         profile.TargetSafeDbSpl = 50.0f + (profile.SafeCeilingPercent / 100.0f) * 38.0f;
                         break;
                     default:

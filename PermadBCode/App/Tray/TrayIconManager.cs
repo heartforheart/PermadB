@@ -225,7 +225,7 @@ public class TrayIconManager : IDisposable
         _contextMenu.Items.Add(_strictLockItem);
 
         // App-Specific Limiting Submenu
-        _appFilteringItem = new ToolStripMenuItem("🎯 App-Specific Limiting ▶");
+        _appFilteringItem = new ToolStripMenuItem("🎯 App-Specific Limiting (Experimental) ▶");
         _appFilteringItem.DropDownOpening += (s, e) => PopulateAppFilteringMenu();
         _contextMenu.Items.Add(_appFilteringItem);
 
@@ -358,7 +358,7 @@ public class TrayIconManager : IDisposable
             }
 
             // 1. Mode toggle
-            var modeToggle = new ToolStripMenuItem("🛡️ Enable App-Specific Limiting Mode")
+            var modeToggle = new ToolStripMenuItem("🛡️ Enable App-Specific Limiting (Experimental)")
             {
                 Checked = _config.Settings.AppFilteringEnabled,
                 Font = _fontBold

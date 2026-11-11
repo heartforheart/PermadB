@@ -426,6 +426,21 @@ STDMETHODIMP CPermadBLimiterAPO::LockForProcess(
         if (channels > 16) channels = 16;
         if (sampleRate < 8000) sampleRate = 48000;
         m_limiter.Init(sampleRate, channels);
+
+        if (m_pTelemetry && m_pTelemetry->targetCeilingLinear >= 0.001f && m_pTelemetry->targetCeilingLinear <= 1.0f)
+        {
+            float effCeiling = m_pTelemetry->targetCeilingLinear;
+            float masterSafe = m_pTelemetry->masterSafetyCeilingLinear;
+            if (masterSafe >= 0.001f && masterSafe <= 1.0f && masterSafe < effCeiling)
+            {
+                effCeiling = masterSafe;
+            }
+            m_limiter.SetCeilingLinear(effCeiling);
+            m_limiter.SetEnabled(m_pTelemetry->isEnabled != 0);
+            m_lastCommandSeq = m_pTelemetry->commandSeq;
+            LogApo(L"LockForProcess initialized ceiling to %.1f%% (%.4f linear, seq=%lu)",
+                effCeiling * 100.0f, effCeiling, m_lastCommandSeq);
+        }
     }
     LogApo(L"LockForProcess result: 0x%08X (rate=%.0f, channels=%u, m_bIsLocked=%d, lookaheadFrames=%u)",
         hr, GetFramesPerSecond(), GetSamplesPerFrame(), m_bIsLocked ? 1 : 0, m_limiter.GetLookaheadFrames());

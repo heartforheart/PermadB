@@ -492,11 +492,11 @@ public class DashboardForm : Form
 
         _chkAppFiltering = new CheckBox
         {
-            Text = "App-Specific Limiting",
+            Text = "App-Specific Limiting (Experimental)",
             Font = new Font("Segoe UI", 8.5f, FontStyle.Regular),
             ForeColor = _textWhite,
             Location = new Point(14, 90),
-            Size = new Size(185, 24),
+            Size = new Size(240, 24),
             Checked = _config.Settings.AppFilteringEnabled,
             Cursor = Cursors.Hand
         };
@@ -915,7 +915,7 @@ public class DashboardForm : Form
             _engine.ApplyPreset(preset);
             _lastKnownPreset = preset;
             var profile = _engine.GetActiveProfile();
-            int sliderVal = (int)Math.Clamp(profile.SafeCeilingPercent, 30, 100);
+            int sliderVal = (int)Math.Clamp(profile.SafeCeilingPercent, 10, 100);
             _customCeilingSlider.Value = sliderVal;
             _customCeilingLabel.Text = $"Custom Limiter Ceiling: {profile.SafeCeilingPercent:F0}% ({profile.TargetSafeDbSpl:F0} dBA)";
             UpdatePresetCards();
@@ -1030,7 +1030,7 @@ public class DashboardForm : Form
             _isUpdatingUi = true;
             try
             {
-                int targetVal = (int)Math.Clamp(profile.SafeCeilingPercent, 30, 100);
+                int targetVal = (int)Math.Clamp(profile.SafeCeilingPercent, 10, 100);
                 if (_customCeilingSlider.Value != targetVal)
                 {
                     _customCeilingSlider.Value = targetVal;

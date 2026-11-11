@@ -705,7 +705,7 @@ export default function App() {
             </div>
             <input 
               type="range" 
-              min="20" 
+              min="10" 
               max="100" 
               value={metrics.safeCeilingPercent} 
               onChange={(e) => handleCeilingChange(e.target.value)}
@@ -837,7 +837,7 @@ export default function App() {
                 {metrics.appSessions?.length || 0} Apps Monitored
               </span>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', color: settings.appFilteringEnabled ? '#38bdf8' : '#94a3b8' }}>
-                <span style={{ fontWeight: settings.appFilteringEnabled ? '600' : 'normal' }}>App-Specific Mode (Advanced)</span>
+                <span style={{ fontWeight: settings.appFilteringEnabled ? '600' : 'normal' }}>App-Specific Mode (Experimental)</span>
                 <input 
                   type="checkbox" 
                   className="toggle-checkbox" 
