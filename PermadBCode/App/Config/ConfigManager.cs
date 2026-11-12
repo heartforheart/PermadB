@@ -85,6 +85,11 @@ public class ConfigManager
                     Settings = settingsToSave;
                 }
 
+                // App-specific limiting remains locked off while Master Safety Limiter handles all audio
+                Settings.AppMixerGuardEnabled = false;
+                Settings.ProtectMicrophoneInputs = false;
+                Settings.AppFilteringEnabled = false;
+
                 var dir = Path.GetDirectoryName(_configFilePath);
                 if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
                 {

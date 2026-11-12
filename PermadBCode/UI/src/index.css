@@ -111,7 +111,8 @@ body {
 .header-controls {
   display: flex;
   align-items: center;
-  gap: 1rem;
+  flex-wrap: wrap;
+  gap: 0.75rem;
 }
 
 /* Big Shield Toggle */
@@ -159,7 +160,26 @@ body {
 
 @media (max-width: 860px) {
   .dashboard-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 520px) {
+  .app-container {
+    padding: 1.25rem 0.9rem 2.5rem;
+  }
+
+  .panel-card {
+    padding: 1.1rem;
+  }
+
+  .presets-row {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.5rem;
+  }
+
+  .meter-readout-row {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -188,6 +208,8 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
   margin-bottom: 1.25rem;
 }
 

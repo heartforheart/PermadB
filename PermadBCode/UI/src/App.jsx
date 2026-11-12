@@ -187,63 +187,6 @@ export default function App() {
     } catch (e) {}
   };
 
-
-
-  // Toggle App-Specific Selective Limiting (Discord only, music blast)
-  const toggleAppFiltering = async () => {
-    const nextVal = !settings.appFilteringEnabled;
-    setSettings(prev => ({ ...prev, appFilteringEnabled: nextVal }));
-    try {
-      await fetch('/api/settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ appFilteringEnabled: nextVal })
-      });
-      fetchData();
-    } catch (e) {}
-  };
-
-  // Toggle Per-App Protection (e.g. Discord Protected vs Spotify Bypassed)
-  const handleToggleAppProtection = async (processName, currentVal) => {
-    const nextVal = !currentVal;
-    setSettings(prev => ({
-      ...prev,
-      appProtectionRules: {
-        ...(prev.appProtectionRules || {}),
-        [processName]: nextVal
-      }
-    }));
-    setMetrics(prev => ({
-      ...prev,
-      appSessions: (prev.appSessions || []).map(s =>
-        s.processName.toLowerCase() === processName.toLowerCase()
-          ? { ...s, isProtected: nextVal }
-          : s
-      )
-    }));
-    try {
-      await fetch('/api/apps/protect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ processName, isProtected: nextVal })
-      });
-    } catch (e) {}
-  };
-
-  const [customAppInput, setCustomAppInput] = useState('');
-  const [showAddApp, setShowAddApp] = useState(false);
-
-  const handleAddCustomApp = async () => {
-    let pName = customAppInput.trim();
-    if (pName.toLowerCase().endsWith('.exe')) {
-      pName = pName.slice(0, -4);
-    }
-    if (!pName) return;
-    await handleToggleAppProtection(pName, false);
-    setCustomAppInput('');
-    setShowAddApp(false);
-  };
-
   // Toggle Windows Autostart
   const toggleStartWithWindows = async () => {
     const nextVal = !settings.startWithWindows;
@@ -836,14 +779,19 @@ export default function App() {
               <span className={`card-badge ${(metrics.appSessions?.length || 0) > 0 ? 'green' : 'gray'}`}>
                 {metrics.appSessions?.length || 0} Apps Monitored
               </span>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', color: settings.appFilteringEnabled ? '#38bdf8' : '#94a3b8' }}>
-                <span style={{ fontWeight: settings.appFilteringEnabled ? '600' : 'normal' }}>App-Specific Mode (Experimental)</span>
+              <div
+                style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', color: '#64748b', opacity: 0.55, cursor: 'not-allowed' }}
+                title="App-Specific Mode is temporarily unavailable. Master Safety Limiter protects all audio."
+              >
+                <span>App-Specific Mode (Unavailable)</span>
                 <input 
                   type="checkbox" 
                   className="toggle-checkbox" 
-                  checked={settings.appFilteringEnabled ?? false} 
-                  onChange={toggleAppFiltering} 
-                  title="Optional: When enabled, routes limited apps via virtual stream while bypassed apps blast at 100%"
+                  checked={false} 
+                  disabled={true}
+                  readOnly
+                  style={{ cursor: 'not-allowed' }}
+                  title="Temporarily unavailable while under development. Master Safety Limiter protects all audio."
                 />
               </div>
             </div>
@@ -878,59 +826,25 @@ export default function App() {
             </div>
           )}
 
-          {/* Custom process adder */}
+          {/* Custom process adder (Disabled while App-Specific Mode is unavailable) */}
           <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', marginBottom: '1rem', alignItems: 'center' }}>
             <button
-              onClick={() => setShowAddApp(!showAddApp)}
+              disabled={true}
+              title="App-specific rules are temporarily unavailable while Master Limiter handles all audio."
               style={{
-                background: 'rgba(255, 255, 255, 0.08)',
-                color: '#f8fafc',
-                border: '1px solid rgba(255, 255, 255, 0.15)',
+                background: 'rgba(255, 255, 255, 0.04)',
+                color: '#64748b',
+                border: '1px solid rgba(255, 255, 255, 0.08)',
                 borderRadius: '6px',
                 padding: '4px 12px',
                 fontSize: '0.8rem',
                 fontWeight: '600',
-                cursor: 'pointer'
+                opacity: 0.55,
+                cursor: 'not-allowed'
               }}
             >
-              ➕ Add App Process...
+              ➕ Add App Process... (Unavailable)
             </button>
-
-            {showAddApp && (
-              <div style={{ display: 'flex', gap: '6px', alignItems: 'center', width: '100%', marginTop: '6px' }}>
-                <input
-                  type="text"
-                  placeholder="e.g. Discord, Spotify, cs2, chrome..."
-                  value={customAppInput}
-                  onChange={e => setCustomAppInput(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter') handleAddCustomApp(); }}
-                  style={{
-                    background: '#0f172a',
-                    border: '1px solid #334155',
-                    borderRadius: '6px',
-                    color: '#fff',
-                    padding: '5px 10px',
-                    fontSize: '0.82rem',
-                    flex: '1'
-                  }}
-                />
-                <button
-                  onClick={handleAddCustomApp}
-                  style={{
-                    background: '#10b981',
-                    color: '#fff',
-                    border: 'none',
-                    borderRadius: '6px',
-                    padding: '5px 14px',
-                    fontSize: '0.82rem',
-                    fontWeight: 'bold',
-                    cursor: 'pointer'
-                  }}
-                >
-                  Add
-                </button>
-              </div>
-            )}
           </div>
 
           {(!metrics.appSessions || metrics.appSessions.length === 0) ? (
@@ -946,7 +860,7 @@ export default function App() {
               🎧 No audio-producing applications active. Launch a game or media app (CS2, Discord, Chrome, Spotify) to see real-time acoustic telemetry!
             </div>
           ) : (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '1rem' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(280px, 100%), 1fr))', gap: '1rem' }}>
               {metrics.appSessions.map((app, idx) => {
                 const isClamped = app.isClamped;
                 const isUnsafe = app.isUnsafe;
@@ -986,20 +900,21 @@ export default function App() {
                           <div style={{ fontSize: '0.7rem', color: '#64748b', display: 'flex', alignItems: 'center', gap: '6px' }}>
                             <span>PID {app.processId} {app.isMuted ? '• Muted' : ''}</span>
                             <button
-                              onClick={() => handleToggleAppProtection(app.processName, Boolean(app.isProtected))}
+                              disabled={true}
                               style={{
-                                background: Boolean(app.isProtected) ? 'rgba(16, 185, 129, 0.15)' : 'rgba(148, 163, 184, 0.15)',
-                                color: Boolean(app.isProtected) ? '#34d399' : '#94a3b8',
-                                border: Boolean(app.isProtected) ? '1px solid rgba(16, 185, 129, 0.35)' : '1px solid rgba(148, 163, 184, 0.25)',
+                                background: 'rgba(148, 163, 184, 0.1)',
+                                color: '#64748b',
+                                border: '1px solid rgba(148, 163, 184, 0.18)',
                                 borderRadius: '4px',
                                 padding: '1px 6px',
                                 fontSize: '0.68rem',
                                 fontWeight: '600',
-                                cursor: 'pointer'
+                                opacity: 0.65,
+                                cursor: 'not-allowed'
                               }}
-                              title={Boolean(app.isProtected) ? "PermadB limits this app. Click to bypass." : "App is bypassed. Click to limit."}
+                              title="App-specific bypass is temporarily unavailable. Master Safety Limiter protects all audio."
                             >
-                              {Boolean(app.isProtected) ? '🛡️ Limited' : '⚡ Bypassed'}
+                              🛡️ Master Guarded
                             </button>
                           </div>
                         </div>
@@ -1059,7 +974,7 @@ export default function App() {
             </h2>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1.5rem' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(280px, 100%), 1fr))', gap: '1.5rem' }}>
             {/* Startup switch */}
             <div className="switch-row">
               <div className="switch-label">

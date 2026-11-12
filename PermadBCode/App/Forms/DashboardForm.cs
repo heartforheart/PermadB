@@ -48,10 +48,13 @@ public class DashboardForm : Form
     private readonly Color _textWhite = Color.FromArgb(248, 250, 252); // Slate 50
     private readonly Color _textMuted = Color.FromArgb(148, 163, 184); // Slate 400
 
-    // Cached Fonts for Row Population (Zero GDI churn)
+    // Cached Fonts & Pens (Zero GDI churn)
     private readonly Font _fontAppName = new("Segoe UI", 9.0f, FontStyle.Bold);
     private readonly Font _fontAppStatus = new("Segoe UI", 7.5f, FontStyle.Regular);
     private readonly Font _fontAppButton = new("Segoe UI", 7.5f, FontStyle.Bold);
+    private readonly Pen _formBorderPen = new(Color.FromArgb(51, 65, 85), 1.5f);
+    private readonly Pen _cardBorderPen = new(Color.FromArgb(51, 65, 85), 1.0f);
+    private bool? _lastRenderedEnabled;
 
     // UI Controls
     private Panel _headerPanel = null!;
@@ -492,43 +495,63 @@ public class DashboardForm : Form
 
         _chkAppFiltering = new CheckBox
         {
-            Text = "App-Specific Limiting (Experimental)",
-            Font = new Font("Segoe UI", 8.5f, FontStyle.Regular),
-            ForeColor = _textWhite,
+            Text = "",
+            Font = new Font("Segoe UI", 8.0f, FontStyle.Regular),
+            ForeColor = Color.FromArgb(135, 150, 170),
             Location = new Point(14, 90),
-            Size = new Size(240, 24),
-            Checked = _config.Settings.AppFilteringEnabled,
-            Cursor = Cursors.Hand
+            Size = new Size(18, 24),
+            Checked = false,
+            Enabled = false,
+            Cursor = Cursors.No
         };
         _chkAppFiltering.CheckedChanged += (s, e) =>
         {
-            if (_config.Settings.AppFilteringEnabled != _chkAppFiltering.Checked)
+            if (_chkAppFiltering.Checked)
             {
-                _engine.ToggleAppFiltering(_chkAppFiltering.Checked);
+                _chkAppFiltering.Checked = false;
             }
-            if (_chkAppMode != null && _chkAppMode.Checked != _chkAppFiltering.Checked)
-            {
-                _chkAppMode.Checked = _chkAppFiltering.Checked;
-            }
+        };
+
+        var lblAppFilteringUnavailable = new Label
+        {
+            Text = "App-Specific Limiting (Unavailable)",
+            Font = _chkAppFiltering.Font,
+            ForeColor = Color.FromArgb(135, 150, 170),
+            Location = new Point(33, 90),
+            Size = new Size(194, 24),
+            TextAlign = ContentAlignment.MiddleLeft,
+            BackColor = Color.Transparent,
+            Cursor = Cursors.No
         };
 
         var btnSelectApps = new Button
         {
-            Text = "🎯 Select Apps (ON / OFF)...",
-            Font = new Font("Segoe UI", 8.0f, FontStyle.Bold),
-            Size = new Size(175, 24),
-            Location = new Point(205, 90),
+            Text = "",
+            Font = new Font("Segoe UI", 7.5f, FontStyle.Bold),
+            Size = new Size(150, 24),
+            Location = new Point(230, 90),
             FlatStyle = FlatStyle.Flat,
-            BackColor = Color.FromArgb(51, 65, 85),
-            ForeColor = Color.White,
-            Cursor = Cursors.Hand
+            BackColor = Color.FromArgb(24, 33, 49),
+            ForeColor = Color.FromArgb(135, 150, 170),
+            Enabled = false,
+            Cursor = Cursors.No
         };
-        btnSelectApps.FlatAppearance.BorderSize = 0;
-        btnSelectApps.Click += (s, e) => ShowAppManagerView();
+        btnSelectApps.FlatAppearance.BorderSize = 1;
+        btnSelectApps.FlatAppearance.BorderColor = Color.FromArgb(51, 65, 85);
+        btnSelectApps.Paint += (s, e) =>
+        {
+            TextRenderer.DrawText(
+                e.Graphics,
+                "🎯 Select Apps (Locked)",
+                btnSelectApps.Font,
+                btnSelectApps.ClientRectangle,
+                Color.FromArgb(135, 150, 170),
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+        };
 
         var hintLabel = new Label
         {
-            Text = "💡 Safe volume ceiling protects hearing. With App-Specific enabled, only chosen apps are clamped; bypassed music blasts at 100% full scale.",
+            Text = "🛡️ Master Safety Limiter protects all system audio & apps. App-Specific bypass mode is temporarily greyed out while in development.",
             Font = new Font("Segoe UI", 8.0f, FontStyle.Italic),
             ForeColor = _textMuted,
             Location = new Point(12, 120),
@@ -539,6 +562,7 @@ public class DashboardForm : Form
         _settingsCard.Controls.Add(_chkStartup);
         _settingsCard.Controls.Add(_chkAllDevices);
         _settingsCard.Controls.Add(_chkAppFiltering);
+        _settingsCard.Controls.Add(lblAppFilteringUnavailable);
         _settingsCard.Controls.Add(btnSelectApps);
         _settingsCard.Controls.Add(hintLabel);
         _mainViewPanel.Controls.Add(_settingsCard);
@@ -565,30 +589,26 @@ public class DashboardForm : Form
 
         _chkAppMode = new CheckBox
         {
-            Text = "Enable App-Specific Limiting Mode",
+            Text = "App-Specific Limiting (Unavailable)",
             Font = new Font("Segoe UI", 9.0f, FontStyle.Bold),
-            ForeColor = _textWhite,
+            ForeColor = _textMuted,
             Location = new Point(12, 8),
             Size = new Size(368, 22),
-            Checked = _config.Settings.AppFilteringEnabled,
-            Cursor = Cursors.Hand
+            Checked = false,
+            Enabled = false,
+            Cursor = Cursors.No
         };
         _chkAppMode.CheckedChanged += (s, e) =>
         {
-            if (_config.Settings.AppFilteringEnabled != _chkAppMode.Checked)
+            if (_chkAppMode.Checked)
             {
-                _engine.ToggleAppFiltering(_chkAppMode.Checked);
+                _chkAppMode.Checked = false;
             }
-            if (_chkAppFiltering != null && _chkAppFiltering.Checked != _chkAppMode.Checked)
-            {
-                _chkAppFiltering.Checked = _chkAppMode.Checked;
-            }
-            PopulateAppManagerRows();
         };
 
         var appModeSub = new Label
         {
-            Text = "When ON, only apps marked LIMITED are clamped. Bypassed apps blast freely at 100%.",
+            Text = "Temporarily disabled while in development. Master Mode safely clamps all audio.",
             Font = new Font("Segoe UI", 7.5f),
             ForeColor = _textMuted,
             Location = new Point(12, 30),
@@ -602,11 +622,11 @@ public class DashboardForm : Form
             Location = new Point(14, 76),
             Size = new Size(248, 26),
             BackColor = _bgCard,
-            ForeColor = Color.White,
+            ForeColor = _textMuted,
             Font = new Font("Segoe UI", 9.0f),
-            PlaceholderText = "🔍 Search applications..."
+            Enabled = false,
+            PlaceholderText = "🔍 Unavailable..."
         };
-        _txtAppSearch.TextChanged += (s, e) => PopulateAppManagerRows();
 
         _btnAddApp = new Button
         {
@@ -614,13 +634,14 @@ public class DashboardForm : Form
             Location = new Point(268, 75),
             Size = new Size(138, 27),
             FlatStyle = FlatStyle.Flat,
-            BackColor = Color.FromArgb(51, 65, 85),
-            ForeColor = Color.White,
+            BackColor = Color.FromArgb(24, 33, 49),
+            ForeColor = Color.FromArgb(100, 116, 139),
             Font = new Font("Segoe UI", 8.0f, FontStyle.Bold),
-            Cursor = Cursors.Hand
+            Enabled = false,
+            Cursor = Cursors.No
         };
-        _btnAddApp.FlatAppearance.BorderSize = 0;
-        _btnAddApp.Click += (s, e) => PromptAddProcess();
+        _btnAddApp.FlatAppearance.BorderSize = 1;
+        _btnAddApp.FlatAppearance.BorderColor = Color.FromArgb(51, 65, 85);
 
         _appsScrollPanel = new FlowLayoutPanel
         {
@@ -665,16 +686,9 @@ public class DashboardForm : Form
             return;
         }
 
+        // App-Specific Limiting is temporarily disabled; route cleanly to main Master Mode dashboard.
         SafeShowNearTray();
-        _mainViewPanel.Visible = false;
-        _appManagerViewPanel.Visible = true;
-        _backButton.Visible = true;
-        _titleLabel.Text = "🎯 App Protection";
-        _titleLabel.Location = new Point(78, 11);
-        _subtitleLabel.Visible = false;
-        _chkAppMode.Checked = _config.Settings.AppFilteringEnabled;
-
-        PopulateAppManagerRows();
+        ShowMainView();
     }
 
     public void ShowMainView()
@@ -685,7 +699,7 @@ public class DashboardForm : Form
         _titleLabel.Text = "🛡️ PermadB";
         _titleLabel.Location = new Point(12, 11);
         _subtitleLabel.Visible = true;
-        _chkAppFiltering.Checked = _config.Settings.AppFilteringEnabled;
+        _chkAppFiltering.Checked = false;
     }
 
     private void PopulateAppManagerRows()
@@ -842,14 +856,12 @@ public class DashboardForm : Form
     {
         base.OnPaint(e);
         // Draw outer 1px border around the entire frameless form
-        using var pen = new Pen(_borderDark, 1.5f);
-        e.Graphics.DrawRectangle(pen, 0, 0, this.Width - 1, this.Height - 1);
+        e.Graphics.DrawRectangle(_formBorderPen, 0, 0, this.Width - 1, this.Height - 1);
     }
 
     private void DrawCardBorder(Graphics g, Rectangle bounds)
     {
-        using var pen = new Pen(_borderDark, 1.0f);
-        g.DrawRectangle(pen, 0, 0, bounds.Width - 1, bounds.Height - 1);
+        g.DrawRectangle(_cardBorderPen, 0, 0, bounds.Width - 1, bounds.Height - 1);
     }
 
     private void HeaderPanel_MouseDown(object? sender, MouseEventArgs e)
@@ -887,6 +899,9 @@ public class DashboardForm : Form
     private void UpdatePowerStatusUI()
     {
         bool isEnabled = _config.Settings.Enabled;
+        if (_lastRenderedEnabled == isEnabled) return;
+        _lastRenderedEnabled = isEnabled;
+
         if (isEnabled)
         {
             _powerStatusLabel.Text = "Protection: ACTIVE";
@@ -1035,7 +1050,11 @@ public class DashboardForm : Form
                 {
                     _customCeilingSlider.Value = targetVal;
                 }
-                _customCeilingLabel.Text = $"Custom Ceiling: {profile.SafeCeilingPercent:F0}% ({profile.TargetSafeDbSpl:F0} dBA)";
+                var ceilText = $"Custom Ceiling: {profile.SafeCeilingPercent:F0}% ({profile.TargetSafeDbSpl:F0} dBA)";
+                if (_customCeilingLabel.Text != ceilText)
+                {
+                    _customCeilingLabel.Text = ceilText;
+                }
             }
             finally
             {
@@ -1104,6 +1123,7 @@ public class DashboardForm : Form
     protected override void OnVisibleChanged(EventArgs e)
     {
         base.OnVisibleChanged(e);
+        _engine.SetUiVisible(this.Visible);
         if (this.Visible)
         {
             _refreshTimer.Start();
@@ -1113,6 +1133,20 @@ public class DashboardForm : Form
         {
             _refreshTimer.Stop();
         }
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _refreshTimer.Dispose();
+            _fontAppName.Dispose();
+            _fontAppStatus.Dispose();
+            _fontAppButton.Dispose();
+            _formBorderPen.Dispose();
+            _cardBorderPen.Dispose();
+        }
+        base.Dispose(disposing);
     }
 }
 
@@ -1142,10 +1176,17 @@ public class DecibelMeterControl : Panel
     private readonly Pen _borderPen = new(Color.FromArgb(51, 65, 85), 1.0f);
     private readonly Pen _peakPen = new(Color.White, 2.0f);
     private readonly Pen _ceilingPen = new(Color.FromArgb(56, 189, 248), 2.0f) { DashStyle = DashStyle.Dot };
+    private readonly SolidBrush _brushPureWhite = new(Color.White);
     private readonly SolidBrush _brushWhite = new(Color.FromArgb(248, 250, 252));
     private readonly SolidBrush _brushMuted = new(Color.FromArgb(148, 163, 184));
     private readonly SolidBrush _brushSky = new(Color.FromArgb(56, 189, 248));
     private readonly SolidBrush _bgGrooveBrush = new(Color.FromArgb(15, 23, 42));
+    private readonly SolidBrush _badgeRedBrush = new(Color.FromArgb(239, 68, 68));
+    private readonly SolidBrush _badgeAmberBrush = new(Color.FromArgb(245, 158, 11));
+    private readonly SolidBrush _badgeGreenBrush = new(Color.FromArgb(34, 197, 94));
+    private readonly SolidBrush _badgeQuietBrush = new(Color.FromArgb(51, 65, 85));
+    private LinearGradientBrush? _barGradientBrush;
+    private int _cachedBarWidth = -1;
 
     public DecibelMeterControl()
     {
@@ -1197,10 +1238,16 @@ public class DecibelMeterControl : Panel
             _borderPen.Dispose();
             _peakPen.Dispose();
             _ceilingPen.Dispose();
+            _brushPureWhite.Dispose();
             _brushWhite.Dispose();
             _brushMuted.Dispose();
             _brushSky.Dispose();
             _bgGrooveBrush.Dispose();
+            _badgeRedBrush.Dispose();
+            _badgeAmberBrush.Dispose();
+            _badgeGreenBrush.Dispose();
+            _badgeQuietBrush.Dispose();
+            _barGradientBrush?.Dispose();
         }
         base.Dispose(disposing);
     }
@@ -1220,44 +1267,38 @@ public class DecibelMeterControl : Panel
 
         // 2. Status Badge Pill (Right side)
         string statusText;
-        Color badgeBg;
-        Color badgeFg = Color.White;
+        SolidBrush badgeBgBrush;
+        SolidBrush badgeFgBrush = _brushPureWhite;
 
         float ceilingSpl = 50.0f + (_metrics.SafeCeilingPercent / 100.0f) * 38.0f;
 
         if (_metrics.IsClamping)
         {
             statusText = "⚡ LIMITER ACTIVE";
-            badgeBg = _red;
+            badgeBgBrush = _badgeRedBrush;
         }
         else if (_displaySpl >= ceilingSpl - 1.5f)
         {
             statusText = "⚠️ AT CEILING";
-            badgeBg = _amber;
+            badgeBgBrush = _badgeAmberBrush;
         }
         else if (_displaySpl > 45.0f)
         {
             statusText = "✓ SAFE LEVEL";
-            badgeBg = _green;
+            badgeBgBrush = _badgeGreenBrush;
         }
         else
         {
             statusText = "QUIET";
-            badgeBg = Color.FromArgb(51, 65, 85);
-            badgeFg = _textMuted;
+            badgeBgBrush = _badgeQuietBrush;
+            badgeFgBrush = _brushMuted;
         }
 
         var badgeSize = g.MeasureString(statusText, _fontBadge);
         var badgeRect = new Rectangle(this.Width - (int)badgeSize.Width - 24, 16, (int)badgeSize.Width + 12, 22);
 
-        using (var badgeBrush = new SolidBrush(badgeBg))
-        {
-            g.FillRectangle(badgeBrush, badgeRect);
-        }
-        using (var badgeTextBrush = new SolidBrush(badgeFg))
-        {
-            g.DrawString(statusText, _fontBadge, badgeTextBrush, badgeRect.X + 6, badgeRect.Y + 4);
-        }
+        g.FillRectangle(badgeBgBrush, badgeRect);
+        g.DrawString(statusText, _fontBadge, badgeFgBrush, badgeRect.X + 6, badgeRect.Y + 4);
 
         // 3. Audio Meter Bar Gauge
         int barX = 14;
@@ -1274,14 +1315,19 @@ public class DecibelMeterControl : Panel
 
         if (fillWidth > 2)
         {
+            if (_barGradientBrush == null || _cachedBarWidth != barWidth)
+            {
+                _barGradientBrush?.Dispose();
+                _barGradientBrush = new LinearGradientBrush(
+                    new Point(barX, barY),
+                    new Point(barX + Math.Max(1, barWidth), barY),
+                    _green,
+                    _red
+                );
+                _cachedBarWidth = barWidth;
+            }
             var fillRect = new Rectangle(barX, barY, fillWidth, barHeight);
-            using var fillBrush = new LinearGradientBrush(
-                new Point(barX, barY),
-                new Point(barX + barWidth, barY),
-                _green,
-                _red
-            );
-            g.FillRectangle(fillBrush, fillRect);
+            g.FillRectangle(_barGradientBrush, fillRect);
         }
 
         // Peak hold tick mark
@@ -1348,6 +1394,9 @@ public class PresetCardControl : Panel
     private readonly SolidBrush _brushCeilingActive = new(Color.FromArgb(56, 189, 248));
     private readonly SolidBrush _brushCeilingNormal = new(Color.FromArgb(248, 250, 252));
     private readonly SolidBrush _brushTag = new(Color.FromArgb(148, 163, 184));
+    private readonly SolidBrush _brushBgCard = new(Color.FromArgb(30, 41, 59));
+    private readonly SolidBrush _brushBgHover = new(Color.FromArgb(41, 55, 78));
+    private readonly SolidBrush _brushBgActive = new(Color.FromArgb(12, 74, 110));
     private readonly Pen _penActive = new(Color.FromArgb(56, 189, 248), 2.0f);
     private readonly Pen _penHover = new(Color.FromArgb(56, 189, 248), 1.0f);
     private readonly Pen _penDark = new(Color.FromArgb(51, 65, 85), 1.0f);
@@ -1394,6 +1443,9 @@ public class PresetCardControl : Panel
             _brushCeilingActive.Dispose();
             _brushCeilingNormal.Dispose();
             _brushTag.Dispose();
+            _brushBgCard.Dispose();
+            _brushBgHover.Dispose();
+            _brushBgActive.Dispose();
             _penActive.Dispose();
             _penHover.Dispose();
             _penDark.Dispose();
@@ -1408,12 +1460,8 @@ public class PresetCardControl : Panel
         g.SmoothingMode = SmoothingMode.AntiAlias;
 
         var bounds = new Rectangle(0, 0, this.Width - 1, this.Height - 1);
-        var bgColor = IsActive ? _bgActive : (_isHovered ? _bgHover : _bgCard);
-
-        using (var bgBrush = new SolidBrush(bgColor))
-        {
-            g.FillRectangle(bgBrush, bounds);
-        }
+        var bgBrush = IsActive ? _brushBgActive : (_isHovered ? _brushBgHover : _brushBgCard);
+        g.FillRectangle(bgBrush, bounds);
 
         var pen = IsActive ? _penActive : (_isHovered ? _penHover : _penDark);
         g.DrawRectangle(pen, bounds);

@@ -100,6 +100,7 @@ public class ApiServer : IDisposable
         {
             if (path == "/api/status" && req.HttpMethod == "GET")
             {
+                _engine.NotifyWebUiActivity();
                 await SendJson(res, new
                 {
                     metrics = _engine.LatestMetrics,
@@ -188,12 +189,12 @@ public class ApiServer : IDisposable
                     _config.Settings.AppMixerGuardEnabled = appGuardProp.GetBoolean();
                 }
 
-                if (incoming.TryGetProperty("appFilteringEnabled", out var appFilterProp))
+                if (incoming.TryGetProperty("appFilteringEnabled", out _))
                 {
-                    var isFilter = appFilterProp.GetBoolean();
-                    if (_config.Settings.AppFilteringEnabled != isFilter)
+                    // App-specific limiting is currently disabled; keep Master Mode active
+                    if (_config.Settings.AppFilteringEnabled)
                     {
-                        _engine.ToggleAppFiltering(isFilter);
+                        _engine.ToggleAppFiltering(false);
                     }
                 }
 
@@ -273,18 +274,9 @@ public class ApiServer : IDisposable
 
             if (path == "/api/apps/protect" && req.HttpMethod == "POST")
             {
-                using var reader = new StreamReader(req.InputStream, req.ContentEncoding);
-                var body = await reader.ReadToEndAsync();
-                var data = JsonSerializer.Deserialize<JsonElement>(body);
-                if (data.TryGetProperty("processName", out var procProp) &&
-                    data.TryGetProperty("isProtected", out var protProp))
-                {
-                    var pName = procProp.GetString() ?? "";
-                    var isProt = protProp.GetBoolean();
-                    _engine.SetAppProtection(pName, isProt);
-                    await SendJson(res, new { success = true, processName = pName, isProtected = isProt });
-                    return;
-                }
+                res.StatusCode = 403;
+                await SendJson(res, new { success = false, error = "App-specific limiting is temporarily unavailable." });
+                return;
             }
 
             if (path == "/api/meter" && req.HttpMethod == "GET")
@@ -294,6 +286,7 @@ public class ApiServer : IDisposable
                 res.Headers.Add("Cache-Control", "no-cache");
                 res.Headers.Add("Connection", "keep-alive");
                 _sseClients.TryAdd(res, 0);
+                _engine.SetSseClientCount(_sseClients.Count);
                 return;
             }
 
@@ -331,22 +324,36 @@ public class ApiServer : IDisposable
         if (now - _lastSseBroadcastMs < 100) return;
         _lastSseBroadcastMs = now;
 
-        var json = JsonSerializer.Serialize(metrics, JsonOpts);
-        var bytes = Encoding.UTF8.GetBytes($"data: {json}\n\n");
+        var jsonBytes = JsonSerializer.SerializeToUtf8Bytes(metrics, JsonOpts);
+        byte[] payload = new byte[6 + jsonBytes.Length + 2];
+        payload[0] = (byte)'d'; payload[1] = (byte)'a'; payload[2] = (byte)'t';
+        payload[3] = (byte)'a'; payload[4] = (byte)':'; payload[5] = (byte)' ';
+        Buffer.BlockCopy(jsonBytes, 0, payload, 6, jsonBytes.Length);
+        payload[^2] = (byte)'\n';
+        payload[^1] = (byte)'\n';
 
-        foreach (var client in _sseClients.Keys)
+        bool removedAny = false;
+        foreach (var kvp in _sseClients)
         {
+            var client = kvp.Key;
             try
             {
-                client.OutputStream.Write(bytes, 0, bytes.Length);
+                client.OutputStream.Write(payload, 0, payload.Length);
                 client.OutputStream.Flush();
             }
             catch
             {
                 // Client disconnected - remove from dictionary immediately to prevent memory leak
-                _sseClients.TryRemove(client, out _);
+                if (_sseClients.TryRemove(client, out _))
+                {
+                    removedAny = true;
+                }
                 try { client.Close(); } catch { }
             }
+        }
+        if (removedAny)
+        {
+            _engine.SetSseClientCount(_sseClients.Count);
         }
     }
 
@@ -452,6 +459,7 @@ public class ApiServer : IDisposable
             try { client.Close(); } catch { }
         }
         _sseClients.Clear();
+        _engine.SetSseClientCount(0);
 
         _engine.OnMetricsUpdated -= BroadcastMetricsToSse;
     }

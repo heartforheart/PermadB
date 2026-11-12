@@ -16,6 +16,8 @@ public class TrayIconManager : IDisposable
     private readonly ContextMenuStrip _contextMenu;
     private readonly Font _fontBold = new(SystemFonts.DefaultFont, FontStyle.Bold);
     private readonly Font _fontItalic = new(SystemFonts.DefaultFont, FontStyle.Italic);
+    private readonly System.Collections.Generic.Dictionary<string, Icon> _iconCache = new(StringComparer.OrdinalIgnoreCase);
+    private string _lastIconState = string.Empty;
 
     // Menu items to update dynamically
     private ToolStripMenuItem _headerItem = null!;
@@ -93,7 +95,7 @@ public class TrayIconManager : IDisposable
         _headerItem = new ToolStripMenuItem("🛡️ PermadB - Safe Audio Guard")
         {
             Enabled = false,
-            Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold)
+            Font = _fontBold
         };
         _contextMenu.Items.Add(_headerItem);
 
@@ -192,7 +194,7 @@ public class TrayIconManager : IDisposable
             OnOpenDashboardRequested?.Invoke();
         })
         {
-            Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold)
+            Font = _fontBold
         };
         _contextMenu.Items.Add(dashboardItem);
 
@@ -224,9 +226,11 @@ public class TrayIconManager : IDisposable
         });
         _contextMenu.Items.Add(_strictLockItem);
 
-        // App-Specific Limiting Submenu
-        _appFilteringItem = new ToolStripMenuItem("🎯 App-Specific Limiting (Experimental) ▶");
-        _appFilteringItem.DropDownOpening += (s, e) => PopulateAppFilteringMenu();
+        // App-Specific Limiting (Temporarily Disabled / Greyed Out)
+        _appFilteringItem = new ToolStripMenuItem("🎯 App-Specific Limiting (Unavailable)")
+        {
+            Enabled = false
+        };
         _contextMenu.Items.Add(_appFilteringItem);
 
         // Protect All Devices (PA / DJ / Headphones)
@@ -298,11 +302,18 @@ public class TrayIconManager : IDisposable
             var isEnabled = _config.Settings.Enabled;
             var preset = _config.Settings.ActivePreset;
 
-            // Update Icon
+            // Update Icon (cached HICON per state so appearance updates never reallocate Bitmaps/streams)
             var iconState = !isEnabled ? "disabled" : (preset == "custom" ? "custom" : "active");
-            var oldIcon = _notifyIcon.Icon;
-            _notifyIcon.Icon = IconGenerator.CreateShieldIcon(iconState);
-            oldIcon?.Dispose();
+            if (!string.Equals(_lastIconState, iconState, StringComparison.OrdinalIgnoreCase))
+            {
+                if (!_iconCache.TryGetValue(iconState, out var cachedIcon))
+                {
+                    cachedIcon = IconGenerator.CreateShieldIcon(iconState);
+                    _iconCache[iconState] = cachedIcon;
+                }
+                _notifyIcon.Icon = cachedIcon;
+                _lastIconState = iconState;
+            }
 
             // Update Menu Checks
             _enabledItem.Checked = isEnabled;
@@ -330,7 +341,8 @@ public class TrayIconManager : IDisposable
             _saveCustom2Item.Text = $"💾 Save Current ({profile.SafeCeilingPercent:F0}%) as Custom 2 (Highest)";
 
             _strictLockItem.Checked = _config.Settings.StrictVolumeLock;
-            _appFilteringItem.Text = _config.Settings.AppFilteringEnabled ? "🎯 App-Specific Limiting [ON] ▶" : "🎯 App-Specific Limiting [OFF] ▶";
+            _appFilteringItem.Enabled = false;
+            _appFilteringItem.Text = "🎯 App-Specific Limiting (Unavailable)";
             _allDevicesItem.Checked = _config.Settings.ApplyToAllDevices;
             _startupItem.Checked = StartupManager.IsStartupEnabled();
 
@@ -505,8 +517,13 @@ public class TrayIconManager : IDisposable
         _config.OnSettingsChanged -= _settingsChangedHandler;
 
         _notifyIcon.Visible = false;
-        _notifyIcon.Icon?.Dispose();
+        _notifyIcon.Icon = null;
         _notifyIcon.Dispose();
+        foreach (var icon in _iconCache.Values)
+        {
+            try { icon.Dispose(); } catch { }
+        }
+        _iconCache.Clear();
         _contextMenu.Dispose();
         _fontBold.Dispose();
         _fontItalic.Dispose();

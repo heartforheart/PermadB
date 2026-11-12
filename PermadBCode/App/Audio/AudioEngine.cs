@@ -241,7 +241,31 @@ public class AudioEngine : IMMNotificationClient, IDisposable
     private IAudioSessionManager2? _cachedSessionManager;
     private IntPtr _channelPeaksNativeBuffer = IntPtr.Zero;
     private float[] _channelPeaksManaged = new float[2];
+    private readonly AutoResetEvent _wakeSignal = new(false);
+    private volatile bool _uiVisible = false;
+    private int _sseClientCount = 0;
+    private long _lastWebUiActivityTicks = 0;
+    private volatile bool _trimRequested = false;
+    private bool _initialTrimDone = false;
+    private readonly DateTime _startupUtc = DateTime.UtcNow;
     private DateTime _lastMemoryTrimTime = DateTime.UtcNow;
+    private DateTime _lastSfxSyncTime = DateTime.MinValue;
+    private bool _fxWriteAccessDenied = false;
+
+    private static readonly string[] TargetAudioModes =
+    {
+        "{C18E2F7E-933D-4965-B7D1-1EEF228D2AF3}", // DEFAULT
+        "{9E90EA20-B493-4FD1-A1A8-7E1361A956CF}", // RAW
+        "{98951333-B9CD-48B1-A0A3-FF40682D73F7}", // COMMUNICATIONS
+        "{FC1CFC9B-B9D6-4CFA-B5E0-4BB2166878B2}", // SPEECH
+        "{4780004E-7133-41D8-8C74-660DADD2C0EE}", // MEDIA
+        "{B26FEB0D-EC94-477C-9494-D1AB8E753F6E}", // MOVIE
+        "{9CF2A70B-F377-403B-BD6B-360863E0355C}", // NOTIFICATION
+        "{FC1CF0A4-3860-4592-8232-A567847BE2D1}", // Speech alias
+        "{47800040-4533-461B-9B4C-9E9D77B11057}", // Media alias
+        "{B26FEDB9-886C-430B-8018-CB5467E9FC0E}", // Movie alias
+        "{00000000-0000-0000-0000-000000000000}"  // Wildcard
+    };
 
     [DllImport("kernel32.dll")]
     private static extern IntPtr GetCurrentProcess();
@@ -346,6 +370,48 @@ public class AudioEngine : IMMNotificationClient, IDisposable
         }
     }
 
+    public void SetUiVisible(bool visible)
+    {
+        bool changed = _uiVisible != visible;
+        _uiVisible = visible;
+        if (visible)
+        {
+            PostToAudioThread(InternalPollMeter);
+        }
+        else if (changed)
+        {
+            _trimRequested = true;
+            _wakeSignal.Set();
+        }
+    }
+
+    public void SetSseClientCount(int count)
+    {
+        int prev = Interlocked.Exchange(ref _sseClientCount, Math.Max(0, count));
+        if (prev == 0 && count > 0)
+        {
+            PostToAudioThread(InternalPollMeter);
+        }
+    }
+
+    public void NotifyWebUiActivity()
+    {
+        long prevTicks = Interlocked.Read(ref _lastWebUiActivityTicks);
+        long nowTicks = DateTime.UtcNow.Ticks;
+        Interlocked.Exchange(ref _lastWebUiActivityTicks, nowTicks);
+        if ((nowTicks - prevTicks) >= TimeSpan.FromSeconds(5).Ticks)
+        {
+            _wakeSignal.Set();
+        }
+    }
+
+    private bool HasWebUiConsumer()
+    {
+        if (Volatile.Read(ref _sseClientCount) > 0) return true;
+        long last = Interlocked.Read(ref _lastWebUiActivityTicks);
+        return last > 0 && (DateTime.UtcNow.Ticks - last) < TimeSpan.FromSeconds(5).Ticks;
+    }
+
     public void EnforceVolumeCeiling()
     {
         PostToAudioThread(() =>
@@ -412,31 +478,21 @@ public class AudioEngine : IMMNotificationClient, IDisposable
 
     public void SetAppProtection(string processName, bool isProtected)
     {
-        var norm = NormalizeProcessName(processName);
-        if (string.IsNullOrWhiteSpace(norm)) return;
-        _config.Settings.AppProtectionRules[norm] = isProtected;
-        _config.Save();
-        _lastProtectedAudioTime = DateTime.MinValue;
-        _lastBypassedAudioTime = DateTime.MinValue;
-        _lastSessionScan = DateTime.MinValue; // Force immediate re-scan!
-        AppLogger.Log($"[USER_ACTION] SetAppProtection: '{processName}' (norm: '{norm}') -> {(isProtected ? "LIMITED [PROTECTED]" : "BYPASSED [BLAST]")}");
-        PostToAudioThread(() =>
-        {
-            _virtualBridge.UpdateCeiling(GetActivePresetLinearCeiling());
-            InternalSyncVirtualBridge();
-            InternalEnforceCeiling();
-            InternalPollMeter();
-        });
+        // App-Specific Limiting is temporarily disabled while Master Safety Limiter handles all audio
     }
 
     public void ToggleAppFiltering(bool? enabled = null)
     {
-        _config.Settings.AppFilteringEnabled = enabled ?? !_config.Settings.AppFilteringEnabled;
-        _config.Save();
+        bool wasEnabled = _config.Settings.AppFilteringEnabled;
+        _config.Settings.AppFilteringEnabled = false;
+        if (wasEnabled)
+        {
+            _config.Save();
+            AppLogger.Log("[USER_ACTION] ToggleAppFiltering: OFF (Master Mode enforced)");
+        }
         _lastProtectedAudioTime = DateTime.MinValue;
         _lastBypassedAudioTime = DateTime.MinValue;
-        _lastSessionScan = DateTime.MinValue; // Force immediate re-scan!
-        AppLogger.Log($"[USER_ACTION] ToggleAppFiltering: {(_config.Settings.AppFilteringEnabled ? "ON (App-Specific Mode)" : "OFF (Master Mode)")}");
+        _lastSessionScan = DateTime.MinValue;
         PostToAudioThread(() =>
         {
             InternalSyncVirtualBridge();
@@ -731,6 +787,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
         if (!_cts.IsCancellationRequested)
         {
             _actionQueue.Add(action);
+            _wakeSignal.Set();
         }
     }
 
@@ -760,23 +817,24 @@ public class AudioEngine : IMMNotificationClient, IDisposable
             InternalRefreshActiveDevice();
             InternalRefreshAllDevices();
 
-            // Main 50Hz audio processing loop
+            // Adaptive polling loop: 20 Hz (50ms) when UI/SSE is active, 2 Hz (500ms) idle in tray
+            // Actions posted via PostToAudioThread signal _wakeSignal for <1ms command latency.
             var token = _cts.Token;
             while (!token.IsCancellationRequested)
             {
-                // Process any queued commands from other threads
                 while (_actionQueue.TryTake(out var action))
                 {
                     try { action(); } catch { }
                 }
 
-                // Poll audio meter
+                // Poll audio meter (lightweight APO sync when hidden; full UI telemetry when visible)
                 InternalPollMeter();
 
-                // Periodic memory trimming check (every 30s)
+                // Smart threshold/hide-triggered memory trimming
                 CheckAndTrimMemory();
 
-                Thread.Sleep(50); // 20 Hz UI meter update loop (reduced COM IPC overhead)
+                int pollIntervalMs = (_uiVisible || HasWebUiConsumer()) ? 50 : 500;
+                _wakeSignal.WaitOne(pollIntervalMs);
             }
         }
         catch (Exception ex)
@@ -941,6 +999,25 @@ public class AudioEngine : IMMNotificationClient, IDisposable
         EnsureEndpointFxProperties(_activeDevice.ID);
     }
 
+    private static bool ContainsAllModes(string[]? currentModes, string[] targetModes)
+    {
+        if (currentModes == null || currentModes.Length < targetModes.Length) return false;
+        for (int i = 0; i < targetModes.Length; i++)
+        {
+            bool found = false;
+            for (int j = 0; j < currentModes.Length; j++)
+            {
+                if (string.Equals(currentModes[j], targetModes[i], StringComparison.OrdinalIgnoreCase))
+                {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) return false;
+        }
+        return true;
+    }
+
     public void EnsureEndpointFxProperties(string deviceId)
     {
         if (string.IsNullOrEmpty(deviceId)) return;
@@ -970,10 +1047,50 @@ public class AudioEngine : IMMNotificationClient, IDisposable
         try
         {
             string subPath = $@"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render\{cleanId}\FxProperties";
+
+            // Fast zero-exception read-only check before requesting write access
+            using (var readKey = Registry.LocalMachine.OpenSubKey(subPath, false))
+            {
+                if (readKey == null) return;
+
+                bool compSfxOk = (readKey.GetValue(pkeyCompositeSfx) as string[]) is { Length: 1 } cs &&
+                                 string.Equals(cs[0], clsidSfx, StringComparison.OrdinalIgnoreCase);
+                bool sfxModesOk = ContainsAllModes(readKey.GetValue(pkeySfxModes) as string[], TargetAudioModes);
+                bool mfxClean = readKey.GetValue(pkeyMfx) == null &&
+                                readKey.GetValue(pkeyCompositeMfx) == null &&
+                                readKey.GetValue(pkeyMfxModes) == null &&
+                                readKey.GetValue("PermadB_Created_CompositeMFX") == null;
+                bool compEfxOk = (readKey.GetValue(pkeyCompositeEfx) as string[]) is { } ce &&
+                                 Array.Exists(ce, s => string.Equals(s, clsidEfx, StringComparison.OrdinalIgnoreCase));
+                bool efxModesOk = ContainsAllModes(readKey.GetValue(pkeyEfxModes) as string[], TargetAudioModes);
+
+                if (string.Equals(readKey.GetValue(pkeyLfx) as string, clsidSfx, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(readKey.GetValue(pkeySfx) as string, clsidSfx, StringComparison.OrdinalIgnoreCase) &&
+                    compSfxOk && sfxModesOk && mfxClean &&
+                    string.Equals(readKey.GetValue(pkeyGfx) as string, clsidEfx, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(readKey.GetValue(pkeyEfx) as string, clsidEfx, StringComparison.OrdinalIgnoreCase) &&
+                    compEfxOk && efxModesOk)
+                {
+                    return;
+                }
+            }
+
+            if (_fxWriteAccessDenied) return;
+
             RegistryKey? key = null;
             try
             {
                 key = Registry.LocalMachine.OpenSubKey(subPath, true);
+            }
+            catch (UnauthorizedAccessException)
+            {
+                _fxWriteAccessDenied = true;
+                return;
+            }
+            catch (System.Security.SecurityException)
+            {
+                _fxWriteAccessDenied = true;
+                return;
             }
             catch
             {
@@ -984,7 +1101,11 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                         RegistryKeyPermissionCheck.ReadWriteSubTree,
                         System.Security.AccessControl.RegistryRights.SetValue | System.Security.AccessControl.RegistryRights.QueryValues);
                 }
-                catch { }
+                catch
+                {
+                    _fxWriteAccessDenied = true;
+                    return;
+                }
             }
 
             if (key != null)
@@ -1028,28 +1149,13 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                     }
 
                     var sfxModes = key.GetValue(pkeySfxModes) as string[];
-                    var targetModes = new[]
-                    {
-                        "{C18E2F7E-933D-4965-B7D1-1EEF228D2AF3}", // DEFAULT
-                        "{9E90EA20-B493-4FD1-A1A8-7E1361A956CF}", // RAW
-                        "{98951333-B9CD-48B1-A0A3-FF40682D73F7}", // COMMUNICATIONS
-                        "{FC1CFC9B-B9D6-4CFA-B5E0-4BB2166878B2}", // SPEECH
-                        "{4780004E-7133-41D8-8C74-660DADD2C0EE}", // MEDIA
-                        "{B26FEB0D-EC94-477C-9494-D1AB8E753F6E}", // MOVIE
-                        "{9CF2A70B-F377-403B-BD6B-360863E0355C}", // NOTIFICATION
-                        "{FC1CF0A4-3860-4592-8232-A567847BE2D1}", // Speech alias
-                        "{47800040-4533-461B-9B4C-9E9D77B11057}", // Media alias
-                        "{B26FEDB9-886C-430B-8018-CB5467E9FC0E}", // Movie alias
-                        "{00000000-0000-0000-0000-000000000000}"  // Wildcard
-                    };
-
                     if (sfxModes == null || sfxModes.Length == 0)
                     {
-                        key.SetValue(pkeySfxModes, targetModes, RegistryValueKind.MultiString);
+                        key.SetValue(pkeySfxModes, TargetAudioModes, RegistryValueKind.MultiString);
                     }
-                    else if (!targetModes.All(m => sfxModes.Contains(m, StringComparer.OrdinalIgnoreCase)))
+                    else if (!ContainsAllModes(sfxModes, TargetAudioModes))
                     {
-                        key.SetValue(pkeySfxModes, sfxModes.Union(targetModes, StringComparer.OrdinalIgnoreCase).ToArray(), RegistryValueKind.MultiString);
+                        key.SetValue(pkeySfxModes, sfxModes.Union(TargetAudioModes, StringComparer.OrdinalIgnoreCase).ToArray(), RegistryValueKind.MultiString);
                     }
 
                     // 1b. Clean up MFX: MFX is post-mode-mix (sums all apps together before processing), which causes cross-app bleeding!
@@ -1082,11 +1188,11 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                     var efxModes = key.GetValue(pkeyEfxModes) as string[];
                     if (efxModes == null || efxModes.Length == 0)
                     {
-                        key.SetValue(pkeyEfxModes, targetModes, RegistryValueKind.MultiString);
+                        key.SetValue(pkeyEfxModes, TargetAudioModes, RegistryValueKind.MultiString);
                     }
-                    else if (!targetModes.All(m => efxModes.Contains(m, StringComparer.OrdinalIgnoreCase)))
+                    else if (!ContainsAllModes(efxModes, TargetAudioModes))
                     {
-                        key.SetValue(pkeyEfxModes, efxModes.Union(targetModes, StringComparer.OrdinalIgnoreCase).ToArray(), RegistryValueKind.MultiString);
+                        key.SetValue(pkeyEfxModes, efxModes.Union(TargetAudioModes, StringComparer.OrdinalIgnoreCase).ToArray(), RegistryValueKind.MultiString);
                     }
                 }
             }
@@ -1096,7 +1202,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
 
     public void SendCeilingToApo()
     {
-        PostToAudioThread(InternalSendCeilingToApo);
+        PostToAudioThread(() => InternalSendCeilingToApo());
     }
 
     /// <summary>
@@ -1114,8 +1220,9 @@ public class AudioEngine : IMMNotificationClient, IDisposable
         return Math.Clamp(linear, 0.01f, 0.8912509f);
     }
 
-    private void InternalSendCeilingToApo()
+    private bool InternalSendCeilingToApo()
     {
+        bool commandChanged = false;
         try
         {
             var profile = GetActiveProfile();
@@ -1181,7 +1288,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
 
             if (_telemetryAcc != null)
             {
-                bool commandChanged = Math.Abs(linear - _lastSentCeilingLinear) > 0.001f || enabledInt != _lastSentEnabled;
+                commandChanged = Math.Abs(linear - _lastSentCeilingLinear) > 0.001f || enabledInt != _lastSentEnabled;
                 if (commandChanged)
                 {
                     _apoCommandSeq++;
@@ -1214,6 +1321,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
         {
             Console.WriteLine($"[AudioEngine] Error sending ceiling to APO: {ex.Message}");
         }
+        return commandChanged;
     }
 
     private void CorrelateAndSyncSfxSlots(List<AppSessionInfo> activeSessions, float safeLinear)
@@ -1522,14 +1630,15 @@ public class AudioEngine : IMMNotificationClient, IDisposable
         int count = 0;
         if (_activeDevice != null) count++;
 
-        if (_config.Settings.ApplyToAllDevices && _enumerator != null)
+        if (_config.Settings.ApplyToAllDevices)
         {
-            try
+            lock (_stateLock)
             {
-                var endpoints = _enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active);
-                count = endpoints.Count;
+                if (_cachedDevices.Count > 0)
+                {
+                    count = _cachedDevices.Count;
+                }
             }
-            catch { }
         }
 
         _cachedProtectedCount = Math.Max(1, count);
@@ -1541,22 +1650,49 @@ public class AudioEngine : IMMNotificationClient, IDisposable
 
         try
         {
-            var meter = _cachedMeter;
-            var endpointVol = _cachedEndpointVolume;
-            var meterPeak = meter.MasterPeakValue;
-            var volScalar = endpointVol.MasterVolumeLevelScalar;
+            var utcNow = DateTime.UtcNow;
             var profile = GetActiveProfile();
-            InternalSendCeilingToApo();
+            bool commandChanged = InternalSendCeilingToApo();
 
-            // Periodically ensure active device FxProperties are configured (SFX, MFX, EFX)
-            if ((DateTime.UtcNow - _lastFxPropertiesCheck).TotalSeconds >= 5.0)
+            // Periodically ensure active device FxProperties are configured (30s, zero-exception read-only first)
+            if ((utcNow - _lastFxPropertiesCheck).TotalSeconds >= 30.0)
             {
-                _lastFxPropertiesCheck = DateTime.UtcNow;
+                _lastFxPropertiesCheck = utcNow;
                 EnsureActiveDeviceFxProperties();
             }
 
             // Check real-time APO telemetry from audiodg.exe
             bool hasApoTelemetry = TryReadApoTelemetry(out var telem);
+
+            bool uiVisible = _uiVisible;
+            bool webUiActive = HasWebUiConsumer();
+            if (!uiVisible && !webUiActive)
+            {
+                // Tray-idle fast path: keep Master SFX slots aligned when ceiling changes or every 2s,
+                // while skipping cross-process COM peak meters and session enumeration!
+                if (commandChanged || (utcNow - _lastSfxSyncTime).TotalSeconds >= 2.0)
+                {
+                    _lastSfxSyncTime = utcNow;
+                    if (_config.Settings.AppFilteringEnabled || (hasApoTelemetry && telem.SfxActiveCount > 0))
+                    {
+                        CorrelateAndSyncSfxSlots(_cachedAppSessions, GetActivePresetLinearCeiling());
+                    }
+                }
+
+                if (_cachedAppSessions.Count > 0 || !_appProcessIds.IsEmpty || !_appSmoothedPeak.IsEmpty || _sessionPeakQueues.Count > 0)
+                {
+                    _cachedAppSessions = new List<AppSessionInfo>();
+                    _appProcessIds.Clear();
+                    _appSmoothedPeak.Clear();
+                    _sessionPeakQueues.Clear();
+                }
+                return;
+            }
+
+            var meter = _cachedMeter;
+            var endpointVol = _cachedEndpointVolume;
+            var meterPeak = meter.MasterPeakValue;
+            var volScalar = endpointVol.MasterVolumeLevelScalar;
             bool isApoRecentlyActive = hasApoTelemetry && ((ulong)Environment.TickCount64 - telem.LastProcessTick < 1500);
 
             float peak;
@@ -1644,13 +1780,23 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                 OnPeakClamped?.Invoke(peakDbfs);
             }
 
-            // Per-Application Sound Mixer & Active Session Leveler (250ms when AppFiltering is ON, 1000ms in Master Mode)
+            // Keep Master SFX slots synchronized when ceiling changes even if only WinForms UI is open
+            if (!webUiActive && (commandChanged || (utcNow - _lastSfxSyncTime).TotalSeconds >= 1.5))
+            {
+                _lastSfxSyncTime = utcNow;
+                if (hasApoTelemetry && telem.SfxActiveCount > 0)
+                {
+                    CorrelateAndSyncSfxSlots(_cachedAppSessions, GetActivePresetLinearCeiling());
+                }
+            }
+
+            // Per-Application Sound Mixer & Active Session Enumeration (only when Web UI is active or AppFiltering enabled)
             // INVARIANT: Native COM pointers are 100% explicitly released with Marshal.ReleaseComObject / FinalReleaseComObject.
             // NAudio's leaky AudioSessionManager.RefreshSessions() is NEVER called, preventing Audiosrv svchost bloat.
             int sessionScanInterval = _config.Settings.AppFilteringEnabled ? 250 : 1000;
-            if ((DateTime.UtcNow - _lastSessionScan).TotalMilliseconds >= sessionScanInterval)
+            if ((_config.Settings.AppFilteringEnabled || webUiActive) && (utcNow - _lastSessionScan).TotalMilliseconds >= sessionScanInterval)
             {
-                _lastSessionScan = DateTime.UtcNow;
+                _lastSessionScan = utcNow;
                 var appSessionsList = new List<AppSessionInfo>();
                 try
                 {
@@ -1837,7 +1983,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                         }
                     }
 
-                    // Periodic prune of process name cache to prevent unbounded growth over weeks
+                    // Periodic prune of process/peak caches to prevent unbounded growth over weeks
                     if (_processNameCache.Count > 250)
                     {
                         _processNameCache.Clear();
@@ -1846,15 +1992,17 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                     {
                         _appSmoothedPeak.Clear();
                     }
+                    if (_appProcessIds.Count > 250)
+                    {
+                        _appProcessIds.Clear();
+                    }
 
                     _cachedAppSessions = appSessionsList;
-                    InternalSendCeilingToApo();
                     CorrelateAndSyncSfxSlots(appSessionsList, GetActivePresetLinearCeiling());
 
-                    var now = DateTime.UtcNow;
-                    if ((now - _lastLogTick).TotalSeconds >= 3.0)
+                    if (AppLogger.VerboseEnabled && (utcNow - _lastLogTick).TotalSeconds >= 3.0)
                     {
-                        _lastLogTick = now;
+                        _lastLogTick = utcNow;
                         var summaries = appSessionsList.Select(x => $"{x.ProcessName}(pk={x.PeakValue:F3},{(x.IsProtected ? "Limited" : "Bypassed")}{(x.IsClamped ? ",clmp" : "")})");
                         float apoDbfs = _lastSentCeilingLinear > 0.0001f ? 20.0f * (float)Math.Log10(_lastSentCeilingLinear) : -96.0f;
                         string bridgeStatus = _virtualBridge.IsActive ? $"ACTIVE(GR={_virtualBridge.CurrentGainReductionDb:F1}dB,act={_virtualBridge.LimiterActivations})" : "OFF";
@@ -1968,25 +2116,40 @@ public class AudioEngine : IMMNotificationClient, IDisposable
     private void CheckAndTrimMemory()
     {
         var now = DateTime.UtcNow;
-        if ((now - _lastMemoryTrimTime).TotalSeconds >= 30.0)
+        bool startupTrim = !_initialTrimDone && (now - _startupUtc).TotalSeconds >= 8.0;
+        bool requestedTrim = _trimRequested && (now - _lastMemoryTrimTime).TotalSeconds >= 2.0;
+        bool periodicDue = (now - _lastMemoryTrimTime).TotalSeconds >= 60.0;
+
+        if (!startupTrim && !requestedTrim && !periodicDue) return;
+
+        long wsBytes = Environment.WorkingSet;
+        if (!startupTrim && !requestedTrim && wsBytes < 20L * 1024 * 1024)
         {
             _lastMemoryTrimTime = now;
-            try
+            return;
+        }
+
+        _initialTrimDone = true;
+        _trimRequested = false;
+        _lastMemoryTrimTime = now;
+
+        try
+        {
+            System.Runtime.GCSettings.LargeObjectHeapCompactionMode = System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
+            GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+            GC.WaitForPendingFinalizers();
+            IntPtr cur = GetCurrentProcess();
+            bool ok1 = EmptyWorkingSet(cur);
+            bool ok2 = SetProcessWorkingSetSize(cur, (IntPtr)(-1), (IntPtr)(-1));
+            if (AppLogger.VerboseEnabled)
             {
-                System.Runtime.GCSettings.LargeObjectHeapCompactionMode = System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
-                GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
-                GC.WaitForPendingFinalizers();
-                GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
-                IntPtr cur = GetCurrentProcess();
-                bool ok1 = EmptyWorkingSet(cur);
-                bool ok2 = SetProcessWorkingSetSize(cur, (IntPtr)(-1), (IntPtr)(-1));
                 long wsMb = Environment.WorkingSet / 1024 / 1024;
                 AppLogger.Log($"[MEMORY_TRIM] EmptyWorkingSet={ok1}, SetProcessWorkingSetSize={ok2}, WS={wsMb}MB");
             }
-            catch (Exception ex)
-            {
-                AppLogger.Log($"[MEMORY_TRIM_ERR] {ex.Message}");
-            }
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Log($"[MEMORY_TRIM_ERR] {ex.Message}");
         }
     }
 
@@ -1994,7 +2157,9 @@ public class AudioEngine : IMMNotificationClient, IDisposable
     {
         _cts.Cancel();
         _actionQueue.CompleteAdding();
+        _wakeSignal.Set();
         _audioThread.Join(1000);
+        _wakeSignal.Dispose();
         CleanupCom();
     }
 }
