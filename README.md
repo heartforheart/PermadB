@@ -22,6 +22,7 @@
 
 ## 📖 Table of Contents
 
+- [🚀 Quick Start (Installation & Tray Setup)](#-quick-start-installation--tray-setup)
 - [🎧 Overview](#-overview)
 - [🔬 How PermadB Protects Your Hearing](#-how-permadb-protects-your-hearing)
 - [✨ Key Features](#-key-features)
@@ -30,10 +31,31 @@
 - [🎛️ Safe Listening Presets](#️-safe-listening-presets)
 - [🏗️ System Architecture](#️-system-architecture)
 - [🔐 Deployment Architecture](#-deployment-architecture-development-vs-production-signing)
-- [🚀 Quick Start (Installation & Tray Setup)](#-quick-start-installation--tray-setup)
 - [🛠️ Building from Source](#️-building-from-source)
 - [🗺️ Milestones / Project Status](#️-milestones--project-status)
 - [📄 License](#-license)
+
+---
+
+## 🚀 Quick Start (Installation & Tray Setup)
+
+> [!NOTE]
+> **No Built-in Auto-Updater**: PermadB is intentionally kept ultra-lightweight (< 20 MB RAM) with zero background bloatware or auto-updater services (and we won't be making one for now). Keep an eye on the `.exe` updating as we push new changes and improvements live to the repository; you may need to reinstall once in a while if you want to stay up to date!
+
+### 1-Click Setup Installer (`PermadB-Setup.exe`)
+Download and run **`PermadB-Setup.exe`**:
+* Installs cleanly to `%ProgramFiles%\PermadB` (or `%LOCALAPPDATA%\Programs\PermadB`) with UAC Administrator elevation.
+* Automatically registers and binds the **PermadB Limiter APO** (`PermadBApo.dll`) into the Windows Audio Engine endpoint processing chain.
+* Preserves OEM and hardware audio enhancement chains (EFX/MFX/SFX) with complete rollback backups.
+* Creates **Desktop** and **Start Menu** shortcuts.
+* Configures **Start with Windows** automatically.
+* Registers in **Windows Settings -> Installed Apps / Add or Remove Programs** (complete with dedicated `Uninstall.exe` for 1-click clean removal and endpoint restoration).
+* Launches PermadB immediately into your system tray!
+
+By default, Windows 11 tucks new background notification icons behind the **`^` (chevron)** overflow menu on the taskbar.
+* Click the **`^`** chevron next to your clock.
+* You will see the **PermadB green shield icon**.
+* If you want it always visible directly on your main taskbar, simply **drag the shield icon** down onto your taskbar, or go to **Windows Settings -> Personalization -> Taskbar -> Other system tray icons** and switch **PermadB** to **On**.
 
 ---
 
@@ -244,25 +266,6 @@ For enterprise distribution, OEM bundling, or production deployment without requ
 2. **Microsoft Hardware Dev Center & HLK Certification**: Under Microsoft's official [Implementing Audio Processing Objects](https://learn.microsoft.com/en-us/windows-hardware/drivers/audio/implementing-audio-processing-objects) documentation, obtaining the protected environment signature attribute (`SignatureAttributes.PETrust`) required for `audiodg.exe` PPL loading cannot be achieved through basic automated attestation alone; it requires submitting test logs passing the official **Windows Hardware Lab Kit (HLK)** audio test playlist.
 3. **Microsoft Production Signature**: Upon passing HLK certification, Microsoft issues an official catalog signature granting protected media trust.
 4. **Protected Loading**: With official WHDC HLK signing, `audiodg.exe` loads the APO natively under full PPL protection (`DisableProtectedAudioDG = 0`).
-
----
-
-## 🚀 Quick Start (Installation & Tray Setup)
-
-### 1-Click Setup Installer (`PermadB-Setup.exe`)
-Download and run **`PermadB-Setup.exe`**:
-* Installs cleanly to `%ProgramFiles%\PermadB` (or `%LOCALAPPDATA%\Programs\PermadB`) with UAC Administrator elevation.
-* Automatically registers and binds the **PermadB Limiter APO** (`PermadBApo.dll`) into the Windows Audio Engine endpoint processing chain.
-* Preserves OEM and hardware audio enhancement chains (EFX/MFX/SFX) with complete rollback backups.
-* Creates **Desktop** and **Start Menu** shortcuts.
-* Configures **Start with Windows** automatically.
-* Registers in **Windows Settings -> Installed Apps / Add or Remove Programs** (complete with dedicated `Uninstall.exe` for 1-click clean removal and endpoint restoration).
-* Launches PermadB immediately into your system tray!
-
-By default, Windows 11 tucks new background notification icons behind the **`^` (chevron)** overflow menu on the taskbar.
-* Click the **`^`** chevron next to your clock.
-* You will see the **PermadB green shield icon**.
-* If you want it always visible directly on your main taskbar, simply **drag the shield icon** down onto your taskbar, or go to **Windows Settings -> Personalization -> Taskbar -> Other system tray icons** and switch **PermadB** to **On**.
 
 ---
 
