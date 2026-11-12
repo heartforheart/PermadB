@@ -112,7 +112,7 @@ public class DashboardForm : Form
             Interval = 33 // ~30 FPS
         };
         _refreshTimer.Tick += (s, e) => RefreshLiveMetrics();
-        _refreshTimer.Start();
+        // Timer starts only when form becomes visible (OnVisibleChanged) to eliminate background CPU/memory churn
 
         UpdatePresetCards();
     }
@@ -1099,6 +1099,20 @@ public class DashboardForm : Form
             return;
         }
         ToggleNearTray();
+    }
+
+    protected override void OnVisibleChanged(EventArgs e)
+    {
+        base.OnVisibleChanged(e);
+        if (this.Visible)
+        {
+            _refreshTimer.Start();
+            RefreshLiveMetrics();
+        }
+        else
+        {
+            _refreshTimer.Stop();
+        }
     }
 }
 

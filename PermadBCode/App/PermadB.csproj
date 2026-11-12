@@ -12,6 +12,13 @@
     <AssemblyTitle>PermadB - Permanent Audio Decibel Guard</AssemblyTitle>
     <AssemblyDescription>Windows 11/10 Background System Tray Audio Decibel and Ear Protection Guard</AssemblyDescription>
     <Version>1.0.0</Version>
+
+    <!-- Low-Memory Desktop GC Configuration -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <RetainVMGarbageCollection>false</RetainVMGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+    <TieredCompilation>true</TieredCompilation>
+    <TieredCompilationQuickJit>true</TieredCompilationQuickJit>
   </PropertyGroup>
 
   <ItemGroup>

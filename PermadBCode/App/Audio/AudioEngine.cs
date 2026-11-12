@@ -235,19 +235,22 @@ public class AudioEngine : IMMNotificationClient, IDisposable
     private static readonly FieldInfo? AsmField = typeof(AudioSessionManager).GetField("audioSessionInterface2", BindingFlags.NonPublic | BindingFlags.Instance);
     private static readonly FieldInfo? MeterNativeField = typeof(AudioMeterInformation).GetField("audioMeterInformation", BindingFlags.NonPublic | BindingFlags.Instance);
 
-    private IAudioSessionManager2? GetNativeSessionManager()
-    {
-        if (_activeDevice == null) return null;
-        try
-        {
-            var asm = _activeDevice.AudioSessionManager;
-            return AsmField?.GetValue(asm) as IAudioSessionManager2;
-        }
-        catch
-        {
-            return null;
-        }
-    }
+    private AudioMeterInformation? _cachedMeter;
+    private AudioEndpointVolume? _cachedEndpointVolume;
+    private IAudioMeterInformation? _cachedRawMeter;
+    private IAudioSessionManager2? _cachedSessionManager;
+    private IntPtr _channelPeaksNativeBuffer = IntPtr.Zero;
+    private float[] _channelPeaksManaged = new float[2];
+    private DateTime _lastMemoryTrimTime = DateTime.UtcNow;
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetProcessWorkingSetSize(IntPtr hProcess, IntPtr dwMinimumWorkingSetSize, IntPtr dwMaximumWorkingSetSize);
+
+    [DllImport("psapi.dll", SetLastError = true)]
+    private static extern bool EmptyWorkingSet(IntPtr hProcess);
 
     // Process name and peak tracking for active WASAPI audio sessions
     private readonly ConcurrentDictionary<int, string> _processNameCache = new();
@@ -305,6 +308,11 @@ public class AudioEngine : IMMNotificationClient, IDisposable
     public AudioEngine(ConfigManager config)
     {
         _config = config;
+        try
+        {
+            _channelPeaksNativeBuffer = Marshal.AllocHGlobal(8 * sizeof(float));
+        }
+        catch { }
 
         // Dedicated MTA audio worker thread for WASAPI COM isolation
         _audioThread = new Thread(AudioThreadLoop)
@@ -765,6 +773,9 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                 // Poll audio meter
                 InternalPollMeter();
 
+                // Periodic memory trimming check (every 30s)
+                CheckAndTrimMemory();
+
                 Thread.Sleep(50); // 20 Hz UI meter update loop (reduced COM IPC overhead)
             }
         }
@@ -778,20 +789,53 @@ public class AudioEngine : IMMNotificationClient, IDisposable
         }
     }
 
+    private void ReleaseCachedDeviceInterfaces()
+    {
+        if (_cachedRawMeter != null)
+        {
+            try { Marshal.FinalReleaseComObject(_cachedRawMeter); } catch { }
+            _cachedRawMeter = null;
+        }
+        if (_cachedSessionManager != null)
+        {
+            try { Marshal.FinalReleaseComObject(_cachedSessionManager); } catch { }
+            _cachedSessionManager = null;
+        }
+        _cachedMeter = null;
+        _cachedEndpointVolume = null;
+    }
+
     private void InternalRefreshActiveDevice()
     {
         if (_enumerator == null) return;
 
         try
         {
+            ReleaseCachedDeviceInterfaces();
             if (_activeDevice != null && _volumeDelegate != null)
             {
                 try { _activeDevice.AudioEndpointVolume.OnVolumeNotification -= _volumeDelegate; } catch { }
             }
+            try { _activeDevice?.Dispose(); } catch { }
+            _activeDevice = null;
 
             _activeDevice = _enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
             if (_activeDevice != null)
             {
+                _cachedMeter = _activeDevice.AudioMeterInformation;
+                _cachedEndpointVolume = _activeDevice.AudioEndpointVolume;
+                try
+                {
+                    _cachedRawMeter = MeterNativeField?.GetValue(_cachedMeter) as IAudioMeterInformation;
+                }
+                catch { }
+                try
+                {
+                    var asm = _activeDevice.AudioSessionManager;
+                    _cachedSessionManager = AsmField?.GetValue(asm) as IAudioSessionManager2;
+                }
+                catch { }
+
                 var id = _activeDevice.ID;
                 var friendlyName = _activeDevice.FriendlyName;
                 var profile = _config.GetOrCreateProfile(id, friendlyName);
@@ -828,7 +872,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                 }
 
                 _volumeDelegate = new AudioEndpointVolumeNotificationDelegate(OnVolumeNotificationReceived);
-                _activeDevice.AudioEndpointVolume.OnVolumeNotification += _volumeDelegate;
+                _cachedEndpointVolume.OnVolumeNotification += _volumeDelegate;
 
                 Console.WriteLine($"[AudioEngine] Active Device: {friendlyName} ({profile.DeviceType}, Preset={_config.Settings.ActivePreset}, Ceiling={profile.SafeCeilingPercent:F0}%)");
                 EnsureEndpointFxProperties(id);
@@ -859,6 +903,13 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                     list.Add(_config.GetOrCreateProfile(ep.ID, ep.FriendlyName));
                 }
                 catch { }
+                finally
+                {
+                    if (_activeDevice == null || !string.Equals(ep.ID, _activeDevice.ID, StringComparison.OrdinalIgnoreCase))
+                    {
+                        try { ep.Dispose(); } catch { }
+                    }
+                }
             }
 
             lock (_stateLock)
@@ -1171,6 +1222,33 @@ public class AudioEngine : IMMNotificationClient, IDisposable
 
         try
         {
+            if (!_config.Settings.AppFilteringEnabled)
+            {
+                // Fast path for Master Mode: ensure all active slots are clamped to safeLinear with bypass=0 without queue/LINQ allocations
+                int s0Offset = (int)Marshal.OffsetOf<PermadBApoTelemetry>(nameof(PermadBApoTelemetry.Slot0));
+                int sSize = Marshal.SizeOf<PermadBSfxSlot>();
+                int offTarget = (int)Marshal.OffsetOf<PermadBSfxSlot>(nameof(PermadBSfxSlot.TargetCeilingLinear));
+                int offBypass = (int)Marshal.OffsetOf<PermadBSfxSlot>(nameof(PermadBSfxSlot.Bypass));
+
+                for (int i = 0; i < 16; i++)
+                {
+                    int slotOffset = s0Offset + (i * sSize);
+                    _telemetryAcc.Read(slotOffset, out PermadBSfxSlot slot);
+                    if (slot.Active != 0)
+                    {
+                        if (Math.Abs(slot.TargetCeilingLinear - safeLinear) > 0.001f)
+                        {
+                            _telemetryAcc.Write(slotOffset + offTarget, safeLinear);
+                        }
+                        if (slot.Bypass != 0)
+                        {
+                            _telemetryAcc.Write(slotOffset + offBypass, 0u);
+                        }
+                    }
+                }
+                return;
+            }
+
             // 1. Maintain sliding history of session peaks (5 ticks = 100ms)
             var currentPids = new HashSet<int>();
             foreach (var session in activeSessions)
@@ -1459,12 +1537,12 @@ public class AudioEngine : IMMNotificationClient, IDisposable
 
     private void InternalPollMeter()
     {
-        if (_activeDevice == null) return;
+        if (_activeDevice == null || _cachedMeter == null || _cachedEndpointVolume == null) return;
 
         try
         {
-            var meter = _activeDevice.AudioMeterInformation;
-            var endpointVol = _activeDevice.AudioEndpointVolume;
+            var meter = _cachedMeter;
+            var endpointVol = _cachedEndpointVolume;
             var meterPeak = meter.MasterPeakValue;
             var volScalar = endpointVol.MasterVolumeLevelScalar;
             var profile = GetActiveProfile();
@@ -1532,37 +1610,32 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                 estimatedContinuousSpl = Math.Min(estimatedContinuousSpl, profile.TargetSafeDbSpl);
             }
 
-            float[] channelPeaks = [peak, peak];
-            try
+            float[] channelPeaks = _channelPeaksManaged;
+            if (_cachedRawMeter != null && _channelPeaksNativeBuffer != IntPtr.Zero)
             {
-                var rawMeter = MeterNativeField?.GetValue(meter) as IAudioMeterInformation;
-                if (rawMeter != null)
+                try
                 {
-                    rawMeter.GetMeteringChannelCount(out int chCount);
-                    if (chCount > 0)
+                    _cachedRawMeter.GetMeteringChannelCount(out int chCount);
+                    if (chCount > 0 && chCount <= 8)
                     {
-                        var peaksArr = new float[chCount];
-                        GCHandle handle = GCHandle.Alloc(peaksArr, GCHandleType.Pinned);
-                        try
+                        if (_channelPeaksManaged.Length != chCount)
                         {
-                            rawMeter.GetChannelsPeakValues(chCount, handle.AddrOfPinnedObject());
-                            if (isApoRecentlyActive)
+                            _channelPeaksManaged = new float[chCount];
+                        }
+                        _cachedRawMeter.GetChannelsPeakValues(chCount, _channelPeaksNativeBuffer);
+                        Marshal.Copy(_channelPeaksNativeBuffer, _channelPeaksManaged, 0, chCount);
+                        if (isApoRecentlyActive)
+                        {
+                            for (int c = 0; c < chCount; c++)
                             {
-                                for (int c = 0; c < chCount; c++)
-                                {
-                                    if (peaksArr[c] > peak) peaksArr[c] = peak;
-                                }
+                                if (_channelPeaksManaged[c] > peak) _channelPeaksManaged[c] = peak;
                             }
-                            channelPeaks = peaksArr;
                         }
-                        finally
-                        {
-                            handle.Free();
-                        }
+                        channelPeaks = _channelPeaksManaged;
                     }
                 }
+                catch { }
             }
-            catch { }
 
             // Active Hearing Safety Monitoring: Detect if acoustic output exceeds safe target for UI meter stats
             bool isExceedingCeiling = estimatedPeakSpl > profile.TargetSafeDbSpl;
@@ -1571,16 +1644,17 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                 OnPeakClamped?.Invoke(peakDbfs);
             }
 
-            // Per-Application Sound Mixer & Active Session Leveler (Responsive 250ms cycle)
-            // INVARIANT: Native COM pointers are 100% explicitly released with Marshal.ReleaseComObject.
+            // Per-Application Sound Mixer & Active Session Leveler (250ms when AppFiltering is ON, 1000ms in Master Mode)
+            // INVARIANT: Native COM pointers are 100% explicitly released with Marshal.ReleaseComObject / FinalReleaseComObject.
             // NAudio's leaky AudioSessionManager.RefreshSessions() is NEVER called, preventing Audiosrv svchost bloat.
-            if ((DateTime.UtcNow - _lastSessionScan).TotalMilliseconds >= 250)
+            int sessionScanInterval = _config.Settings.AppFilteringEnabled ? 250 : 1000;
+            if ((DateTime.UtcNow - _lastSessionScan).TotalMilliseconds >= sessionScanInterval)
             {
                 _lastSessionScan = DateTime.UtcNow;
                 var appSessionsList = new List<AppSessionInfo>();
                 try
                 {
-                    var mgr2 = GetNativeSessionManager();
+                    var mgr2 = _cachedSessionManager;
                     if (mgr2 != null)
                     {
                         int hrEnum = mgr2.GetSessionEnumerator(out var sessionEnum);
@@ -1627,8 +1701,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
 
                                                 float appVol = 1.0f;
                                                 bool appMute = false;
-                                                var simpleVol = s as ISimpleAudioVolume;
-                                                if (simpleVol != null)
+                                                if (s is ISimpleAudioVolume simpleVol)
                                                 {
                                                     simpleVol.GetMasterVolume(out appVol);
                                                     simpleVol.GetMute(out appMute);
@@ -1644,7 +1717,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                                             }
                                             finally
                                             {
-                                                Marshal.ReleaseComObject(s);
+                                                try { Marshal.FinalReleaseComObject(s); } catch { }
                                             }
                                         }
                                     }
@@ -1759,7 +1832,7 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                             }
                             finally
                             {
-                                Marshal.ReleaseComObject(sessionEnum);
+                                try { Marshal.FinalReleaseComObject(sessionEnum); } catch { }
                             }
                         }
                     }
@@ -1792,34 +1865,34 @@ public class AudioEngine : IMMNotificationClient, IDisposable
                 catch { }
             }
 
-            var m = new AudioMetrics
+            // In-place zero-allocation metrics update
+            lock (_stateLock)
             {
-                MasterPeak = peak,
-                PeakDbfs = (float)Math.Round(peakDbfs, 1),
-                EstimatedDbSpl = (float)Math.Round(estimatedContinuousSpl, 1),
-                CurrentVolumePercent = (float)Math.Round(volScalar * 100.0f, 1),
-                SafeCeilingPercent = profile.SafeCeilingPercent,
-                IsClamping = isClamping,
-                SpikesClampedTotal = spikesClamped,
-                ChannelPeaks = channelPeaks,
-                ActiveDeviceId = profile.DeviceId,
-                ActiveDeviceName = profile.DeviceName,
-                ActiveDeviceType = profile.DeviceType,
-                Enabled = _config.Settings.Enabled,
-                ApplyToAllDevices = _config.Settings.ApplyToAllDevices,
-                ProtectMicrophoneInputs = _config.Settings.ProtectMicrophoneInputs,
-                ProtectedDevicesCount = _cachedProtectedCount,
-                AppMixerGuardEnabled = _config.Settings.AppMixerGuardEnabled,
-                AppFilteringEnabled = _config.Settings.AppFilteringEnabled,
-                Custom1PresetPercent = _config.Settings.Custom1PresetPercent,
-                Custom2PresetPercent = _config.Settings.Custom2PresetPercent,
-                SfxActiveCount = hasApoTelemetry ? (int)telem.SfxActiveCount : 0,
-                AppProtectionRules = _config.Settings.AppProtectionRules,
-                AppSessions = _cachedAppSessions
-            };
+                _latestMetrics.MasterPeak = peak;
+                _latestMetrics.PeakDbfs = (float)Math.Round(peakDbfs, 1);
+                _latestMetrics.EstimatedDbSpl = (float)Math.Round(estimatedContinuousSpl, 1);
+                _latestMetrics.CurrentVolumePercent = (float)Math.Round(volScalar * 100.0f, 1);
+                _latestMetrics.SafeCeilingPercent = profile.SafeCeilingPercent;
+                _latestMetrics.IsClamping = isClamping;
+                _latestMetrics.SpikesClampedTotal = spikesClamped;
+                _latestMetrics.ChannelPeaks = channelPeaks;
+                _latestMetrics.ActiveDeviceId = profile.DeviceId;
+                _latestMetrics.ActiveDeviceName = profile.DeviceName;
+                _latestMetrics.ActiveDeviceType = profile.DeviceType;
+                _latestMetrics.Enabled = _config.Settings.Enabled;
+                _latestMetrics.ApplyToAllDevices = _config.Settings.ApplyToAllDevices;
+                _latestMetrics.ProtectMicrophoneInputs = _config.Settings.ProtectMicrophoneInputs;
+                _latestMetrics.ProtectedDevicesCount = _cachedProtectedCount;
+                _latestMetrics.AppMixerGuardEnabled = _config.Settings.AppMixerGuardEnabled;
+                _latestMetrics.AppFilteringEnabled = _config.Settings.AppFilteringEnabled;
+                _latestMetrics.Custom1PresetPercent = _config.Settings.Custom1PresetPercent;
+                _latestMetrics.Custom2PresetPercent = _config.Settings.Custom2PresetPercent;
+                _latestMetrics.SfxActiveCount = hasApoTelemetry ? (int)telem.SfxActiveCount : 0;
+                _latestMetrics.AppProtectionRules = _config.Settings.AppProtectionRules;
+                _latestMetrics.AppSessions = _cachedAppSessions;
+            }
 
-            LatestMetrics = m;
-            OnMetricsUpdated?.Invoke(m);
+            OnMetricsUpdated?.Invoke(_latestMetrics);
         }
         catch { }
     }
@@ -1861,6 +1934,13 @@ public class AudioEngine : IMMNotificationClient, IDisposable
     {
         try
         {
+            ReleaseCachedDeviceInterfaces();
+            if (_channelPeaksNativeBuffer != IntPtr.Zero)
+            {
+                try { Marshal.FreeHGlobal(_channelPeaksNativeBuffer); } catch { }
+                _channelPeaksNativeBuffer = IntPtr.Zero;
+            }
+
             _telemetryAcc?.Dispose();
             _telemetryAcc = null;
             _telemetryMmf?.Dispose();
@@ -1874,13 +1954,40 @@ public class AudioEngine : IMMNotificationClient, IDisposable
             }
             if (_activeDevice != null && _volumeDelegate != null)
             {
-                _activeDevice.AudioEndpointVolume.OnVolumeNotification -= _volumeDelegate;
+                try { _activeDevice.AudioEndpointVolume.OnVolumeNotification -= _volumeDelegate; } catch { }
             }
+            try { _activeDevice?.Dispose(); } catch { }
+            _activeDevice = null;
             _enumerator?.Dispose();
             _virtualBridge.Dispose();
             _policyConfigClient.Dispose();
         }
         catch { }
+    }
+
+    private void CheckAndTrimMemory()
+    {
+        var now = DateTime.UtcNow;
+        if ((now - _lastMemoryTrimTime).TotalSeconds >= 30.0)
+        {
+            _lastMemoryTrimTime = now;
+            try
+            {
+                System.Runtime.GCSettings.LargeObjectHeapCompactionMode = System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
+                GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+                GC.WaitForPendingFinalizers();
+                GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+                IntPtr cur = GetCurrentProcess();
+                bool ok1 = EmptyWorkingSet(cur);
+                bool ok2 = SetProcessWorkingSetSize(cur, (IntPtr)(-1), (IntPtr)(-1));
+                long wsMb = Environment.WorkingSet / 1024 / 1024;
+                AppLogger.Log($"[MEMORY_TRIM] EmptyWorkingSet={ok1}, SetProcessWorkingSetSize={ok2}, WS={wsMb}MB");
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Log($"[MEMORY_TRIM_ERR] {ex.Message}");
+            }
+        }
     }
 
     public void Dispose()
