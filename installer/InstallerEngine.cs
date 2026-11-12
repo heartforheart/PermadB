@@ -431,8 +431,7 @@ public static class InstallerEngine
             "{9CF2A70B-F377-403B-BD6B-360863E0355C}", // NOTIFICATION
             "{FC1CF0A4-3860-4592-8232-A567847BE2D1}", // Speech alias
             "{47800040-4533-461B-9B4C-9E9D77B11057}", // Media alias
-            "{B26FEDB9-886C-430B-8018-CB5467E9FC0E}", // Movie alias
-            "{00000000-0000-0000-0000-000000000000}"  // Wildcard
+            "{B26FEDB9-886C-430B-8018-CB5467E9FC0E}"  // Movie alias
         };
 
         const string renderBasePath = @"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render";
@@ -486,143 +485,138 @@ public static class InstallerEngine
                     {
                         using (fxKey)
                         {
-                            // 0. Self-healing: restore third-party SFX/EFX if backed up
-                            try
+                            const string nullModeGuid = "{00000000-0000-0000-0000-000000000000}";
+                            const string pkeyCompositeOsfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},19";
+                            const string pkeyCompositeOmfx = "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},20";
+                            const string pkeyDisableSysFx = "{1da5d803-d492-4edd-8c23-e0c0ffee7f0e},5";
+
+                            // 0. Restore legacy DTS SFX multi-string backup if present
+                            if (fxKey.GetValue("PermadB_Backup_SFX_DTS") is string[] dtsMulti &&
+                                !HasNonEmptyArray(fxKey, "PermadB_Backup_CompositeSFX"))
                             {
-                                var backupComp = fxKey.GetValue("PermadB_Backup_CompositeSFX_DTS") as string[];
-                                if (backupComp != null && backupComp.Length > 0)
+                                var cleanedDts = dtsMulti
+                                    .Where(s => !string.IsNullOrWhiteSpace(s) && !string.Equals(s, clsidSfx, StringComparison.OrdinalIgnoreCase))
+                                    .ToArray();
+                                if (cleanedDts.Length > 0)
                                 {
-                                    fxKey.SetValue(pkeyCompositeSfx, backupComp, RegistryValueKind.MultiString);
-                                    fxKey.DeleteValue("PermadB_Backup_CompositeSFX_DTS", false);
+                                    fxKey.SetValue(pkeyCompositeSfx, cleanedDts, RegistryValueKind.MultiString);
                                 }
+                                try { fxKey.DeleteValue("PermadB_Backup_SFX_DTS", false); } catch { }
                             }
-                            catch { }
 
-                            try
+                            // 1. Restore OEM SFX/LFX & strip PermadB Per-App SFX so OEM APOs (HyperX DTS, Realtek, etc.) operate normally
+                            RestoreCompositeClsid(fxKey, pkeyCompositeSfx, clsidSfx, "PermadB_Created_CompositeSFX", "PermadB_Backup_CompositeSFX_DTS", "PermadB_Backup_CompositeSFX");
+                            RestoreStringClsid(fxKey, pkeySfx, clsidSfx, "PermadB_Backup_SFX_DTS", "PermadB_Backup_SFX");
+                            RestoreStringClsid(fxKey, pkeyLfx, clsidSfx, "PermadB_Backup_LFX");
+
+                            bool hasOemSfx = HasNonEmptyArray(fxKey, pkeyCompositeSfx) ||
+                                             (!string.IsNullOrWhiteSpace(fxKey.GetValue(pkeySfx) as string) &&
+                                              !string.Equals(fxKey.GetValue(pkeySfx) as string, clsidSfx, StringComparison.OrdinalIgnoreCase));
+                            RestoreOrCleanSfxModes(fxKey, pkeySfxModes, nullModeGuid, hasOemSfx);
+
+                            // 2. Restore OEM MFX only if PermadB left backups/created markers or clsidSfx; never strip native OEM MFX
+                            RestoreStringClsid(fxKey, pkeyMfx, clsidSfx, "PermadB_Backup_MFX");
+                            RestoreCompositeClsid(fxKey, pkeyCompositeMfx, clsidSfx, "PermadB_Created_CompositeMFX", "PermadB_Backup_CompositeMFX");
+                            if (fxKey.GetValue("PermadB_Backup_MFXModes") is string[] backupMfxModes)
                             {
-                                var backupSfx = fxKey.GetValue("PermadB_Backup_SFX_DTS");
-                                if (backupSfx != null)
-                                {
-                                    if (backupSfx is string[] multi)
-                                    {
-                                        fxKey.SetValue(pkeyCompositeSfx, multi, RegistryValueKind.MultiString);
-                                    }
-                                    else if (backupSfx is string s && !string.IsNullOrEmpty(s))
-                                    {
-                                        fxKey.SetValue(pkeySfx, s, RegistryValueKind.String);
-                                    }
-                                    fxKey.DeleteValue("PermadB_Backup_SFX_DTS", false);
-                                }
+                                var cleanedMfxModes = backupMfxModes
+                                    .Where(m => !string.IsNullOrWhiteSpace(m) && !string.Equals(m, nullModeGuid, StringComparison.OrdinalIgnoreCase))
+                                    .ToArray();
+                                if (cleanedMfxModes.Length > 0) fxKey.SetValue(pkeyMfxModes, cleanedMfxModes, RegistryValueKind.MultiString);
+                                else try { fxKey.DeleteValue(pkeyMfxModes, false); } catch { }
+                                try { fxKey.DeleteValue("PermadB_Backup_MFXModes", false); } catch { }
+                                try { fxKey.DeleteValue("PermadB_Created_MFXModes", false); } catch { }
                             }
-                            catch { }
-
-                            // 0. Configure Legacy LFX (Local Effect)
-                            var existingLfx = fxKey.GetValue(pkeyLfx) as string;
-                            if (!string.IsNullOrEmpty(existingLfx) && !string.Equals(existingLfx, clsidSfx, StringComparison.OrdinalIgnoreCase))
+                            else if (fxKey.GetValue("PermadB_Created_MFXModes") != null)
                             {
-                                if (fxKey.GetValue("PermadB_Backup_LFX") == null)
+                                if (!HasNonEmptyArray(fxKey, pkeyCompositeMfx) && string.IsNullOrWhiteSpace(fxKey.GetValue(pkeyMfx) as string))
                                 {
-                                    fxKey.SetValue("PermadB_Backup_LFX", existingLfx, RegistryValueKind.String);
+                                    try { fxKey.DeleteValue(pkeyMfxModes, false); } catch { }
                                 }
+                                try { fxKey.DeleteValue("PermadB_Created_MFXModes", false); } catch { }
                             }
-                            fxKey.SetValue(pkeyLfx, clsidSfx, RegistryValueKind.String);
 
-                            // 1. Configure SFX (Pre-Mix Stream Effect) - Sole entry to prevent OEM DTS chain drops
-                            var existingSfx = fxKey.GetValue(pkeySfx) as string;
-                            if (!string.IsNullOrEmpty(existingSfx) && !string.Equals(existingSfx, clsidSfx, StringComparison.OrdinalIgnoreCase))
+                            // 3. Configure Post-Mix Master Limiter EFX without mixing legacy GFX/EFX on CompositeFX endpoints
+                            bool usesCompositeFx = HasNonEmptyArray(fxKey, pkeyCompositeSfx) ||
+                                                   HasNonEmptyArray(fxKey, pkeyCompositeMfx) ||
+                                                   HasNonEmptyArray(fxKey, pkeyCompositeOsfx) ||
+                                                   HasNonEmptyArray(fxKey, pkeyCompositeOmfx) ||
+                                                   (fxKey.GetValue(pkeyCompositeEfx) is string[] existingCompCheck &&
+                                                    existingCompCheck.Any(s => !string.IsNullOrWhiteSpace(s) && !string.Equals(s, clsidEfx, StringComparison.OrdinalIgnoreCase)));
+
+                            if (usesCompositeFx)
                             {
-                                if (fxKey.GetValue("PermadB_Backup_SFX") == null)
-                                {
-                                    fxKey.SetValue("PermadB_Backup_SFX", existingSfx, RegistryValueKind.String);
-                                }
-                            }
-                            fxKey.SetValue(pkeySfx, clsidSfx, RegistryValueKind.String);
-
-                            var existingCompSfx = fxKey.GetValue(pkeyCompositeSfx) as string[];
-                            if (existingCompSfx != null && existingCompSfx.Length > 0)
-                            {
-                                var oemSfx = existingCompSfx.Where(s => !string.Equals(s, clsidSfx, StringComparison.OrdinalIgnoreCase)).ToArray();
-                                if (oemSfx.Length > 0 && fxKey.GetValue("PermadB_Backup_CompositeSFX") == null)
-                                {
-                                    fxKey.SetValue("PermadB_Backup_CompositeSFX", existingCompSfx, RegistryValueKind.MultiString);
-                                }
-                            }
-                            fxKey.SetValue(pkeyCompositeSfx, new string[] { clsidSfx }, RegistryValueKind.MultiString);
-
-                            // 1b. Clean up MFX: MFX runs post-mode-mix, which sums all apps together and causes cross-app bleeding!
-                            try { fxKey.DeleteValue(pkeyMfx, false); } catch { }
-                            try { fxKey.DeleteValue(pkeyCompositeMfx, false); } catch { }
-                            try { fxKey.DeleteValue(pkeyMfxModes, false); } catch { }
-                            try { fxKey.DeleteValue("PermadB_Created_CompositeMFX", false); } catch { }
-
-                            // 2. Configure Legacy GFX (Global Effect)
-                            var existingGfx = fxKey.GetValue(pkeyGfx) as string;
-                            if (!string.IsNullOrEmpty(existingGfx) && !string.Equals(existingGfx, clsidEfx, StringComparison.OrdinalIgnoreCase))
-                            {
-                                if (fxKey.GetValue("PermadB_Backup_GFX") == null)
-                                {
-                                    fxKey.SetValue("PermadB_Backup_GFX", existingGfx, RegistryValueKind.String);
-                                }
-                            }
-                            fxKey.SetValue(pkeyGfx, clsidEfx, RegistryValueKind.String);
-
-                            // 3. Configure EFX (Post-Mix Endpoint Effect)
-                            var existingEfx = fxKey.GetValue(pkeyEfx) as string;
-                            if (!string.IsNullOrEmpty(existingEfx) && !string.Equals(existingEfx, clsidEfx, StringComparison.OrdinalIgnoreCase))
-                            {
-                                if (fxKey.GetValue("PermadB_Backup_EFX") == null)
-                                {
-                                    fxKey.SetValue("PermadB_Backup_EFX", existingEfx, RegistryValueKind.String);
-                                }
-                            }
-                            fxKey.SetValue(pkeyEfx, clsidEfx, RegistryValueKind.String);
-
-                            // 3. Configure CompositeEFX
-                            var existingComp = fxKey.GetValue(pkeyCompositeEfx) as string[];
-                            if (existingComp != null && existingComp.Length > 0)
-                            {
-                                if (!existingComp.Any(s => string.Equals(s, clsidEfx, StringComparison.OrdinalIgnoreCase)))
-                                {
-                                    if (fxKey.GetValue("PermadB_Backup_CompositeEFX") == null)
-                                    {
-                                        fxKey.SetValue("PermadB_Backup_CompositeEFX", existingComp, RegistryValueKind.MultiString);
-                                    }
-                                    var newComp = existingComp.Append(clsidEfx).ToArray();
-                                    fxKey.SetValue(pkeyCompositeEfx, newComp, RegistryValueKind.MultiString);
-                                }
+                                RestoreStringClsid(fxKey, pkeyGfx, clsidEfx, "PermadB_Backup_GFX");
+                                RestoreStringClsid(fxKey, pkeyEfx, clsidEfx, "PermadB_Backup_EFX");
                             }
                             else
                             {
-                                fxKey.SetValue("PermadB_Created_CompositeEFX", 1, RegistryValueKind.DWord);
+                                var existingGfx = fxKey.GetValue(pkeyGfx) as string;
+                                if (!string.Equals(existingGfx, clsidEfx, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    if (!string.IsNullOrWhiteSpace(existingGfx) && fxKey.GetValue("PermadB_Backup_GFX") == null)
+                                    {
+                                        fxKey.SetValue("PermadB_Backup_GFX", existingGfx, RegistryValueKind.String);
+                                    }
+                                    fxKey.SetValue(pkeyGfx, clsidEfx, RegistryValueKind.String);
+                                }
+
+                                var existingEfx = fxKey.GetValue(pkeyEfx) as string;
+                                if (!string.Equals(existingEfx, clsidEfx, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    if (!string.IsNullOrWhiteSpace(existingEfx) && fxKey.GetValue("PermadB_Backup_EFX") == null)
+                                    {
+                                        fxKey.SetValue("PermadB_Backup_EFX", existingEfx, RegistryValueKind.String);
+                                    }
+                                    fxKey.SetValue(pkeyEfx, clsidEfx, RegistryValueKind.String);
+                                }
+                            }
+
+                            var existingComp = fxKey.GetValue(pkeyCompositeEfx) as string[];
+                            if (existingComp == null || existingComp.Length == 0)
+                            {
+                                if (fxKey.GetValue("PermadB_Backup_CompositeEFX") == null)
+                                {
+                                    fxKey.SetValue("PermadB_Created_CompositeEFX", 1, RegistryValueKind.DWord);
+                                }
                                 fxKey.SetValue(pkeyCompositeEfx, new string[] { clsidEfx }, RegistryValueKind.MultiString);
                             }
-
-                            // 4. Configure Processing Modes for SFX and EFX
-                            var existingSfxModes = fxKey.GetValue(pkeySfxModes) as string[];
-                            if (existingSfxModes != null && existingSfxModes.Length > 0)
+                            else if (!existingComp.Any(s => string.Equals(s, clsidEfx, StringComparison.OrdinalIgnoreCase)))
                             {
-                                var mergedSfxModes = existingSfxModes.Union(targetModes, StringComparer.OrdinalIgnoreCase).ToArray();
-                                fxKey.SetValue(pkeySfxModes, mergedSfxModes, RegistryValueKind.MultiString);
-                            }
-                            else
-                            {
-                                fxKey.SetValue(pkeySfxModes, targetModes, RegistryValueKind.MultiString);
+                                if (fxKey.GetValue("PermadB_Backup_CompositeEFX") == null && fxKey.GetValue("PermadB_Created_CompositeEFX") == null)
+                                {
+                                    fxKey.SetValue("PermadB_Backup_CompositeEFX", existingComp, RegistryValueKind.MultiString);
+                                }
+                                fxKey.SetValue(pkeyCompositeEfx, existingComp.Append(clsidEfx).ToArray(), RegistryValueKind.MultiString);
                             }
 
                             var existingEfxModes = fxKey.GetValue(pkeyEfxModes) as string[];
-                            if (existingEfxModes != null && existingEfxModes.Length > 0)
+                            if (existingEfxModes == null || existingEfxModes.Length == 0)
                             {
                                 if (fxKey.GetValue("PermadB_Backup_EFXModes") == null)
                                 {
+                                    fxKey.SetValue("PermadB_Created_EFXModes", 1, RegistryValueKind.DWord);
+                                }
+                                fxKey.SetValue(pkeyEfxModes, targetModes, RegistryValueKind.MultiString);
+                            }
+                            else if (!targetModes.All(t => existingEfxModes.Any(c => string.Equals(c, t, StringComparison.OrdinalIgnoreCase))) ||
+                                     existingEfxModes.Any(m => string.Equals(m, nullModeGuid, StringComparison.OrdinalIgnoreCase)))
+                            {
+                                if (fxKey.GetValue("PermadB_Backup_EFXModes") == null && fxKey.GetValue("PermadB_Created_EFXModes") == null)
+                                {
                                     fxKey.SetValue("PermadB_Backup_EFXModes", existingEfxModes, RegistryValueKind.MultiString);
                                 }
-                                var mergedModes = existingEfxModes.Union(targetModes, StringComparer.OrdinalIgnoreCase).ToArray();
+                                var mergedModes = existingEfxModes
+                                    .Where(m => !string.IsNullOrWhiteSpace(m) && !string.Equals(m, nullModeGuid, StringComparison.OrdinalIgnoreCase))
+                                    .Union(targetModes, StringComparer.OrdinalIgnoreCase)
+                                    .ToArray();
                                 fxKey.SetValue(pkeyEfxModes, mergedModes, RegistryValueKind.MultiString);
                             }
-                            else
+
+                            // 4. Restore Device default effects if Audio Enhancements were toggled Off
+                            if (fxKey.GetValue(pkeyDisableSysFx) is int disableSysFx && disableSysFx != 0)
                             {
-                                fxKey.SetValue("PermadB_Created_EFXModes", 1, RegistryValueKind.DWord);
-                                fxKey.SetValue(pkeyEfxModes, targetModes, RegistryValueKind.MultiString);
+                                fxKey.SetValue(pkeyDisableSysFx, 0, RegistryValueKind.DWord);
                             }
 
                             fxKey.SetValue("PermadB_Installed_DeviceId", deviceId, RegistryValueKind.String);
@@ -632,6 +626,116 @@ public static class InstallerEngine
                 catch (Exception ex)
                 {
                     Console.WriteLine($"[ConfigureEndpointFxProperties] Error configuring device {deviceId}: {ex.Message}");
+                }
+            }
+
+            static bool HasNonEmptyArray(RegistryKey key, string valueName) =>
+                key.GetValue(valueName) is string[] arr && arr.Any(s => !string.IsNullOrWhiteSpace(s));
+
+            static void RestoreStringClsid(RegistryKey key, string propKey, string permadbClsid, params string[] backupNames)
+            {
+                string? restored = null;
+                foreach (var bName in backupNames)
+                {
+                    if (key.GetValue(bName) is string s && !string.IsNullOrWhiteSpace(s) && !string.Equals(s, permadbClsid, StringComparison.OrdinalIgnoreCase))
+                    {
+                        restored = s;
+                        break;
+                    }
+                }
+
+                if (restored != null)
+                {
+                    key.SetValue(propKey, restored, RegistryValueKind.String);
+                }
+                else if (string.Equals(key.GetValue(propKey) as string, permadbClsid, StringComparison.OrdinalIgnoreCase))
+                {
+                    try { key.DeleteValue(propKey, false); } catch { }
+                }
+
+                foreach (var bName in backupNames)
+                {
+                    try { key.DeleteValue(bName, false); } catch { }
+                }
+            }
+
+            static void RestoreCompositeClsid(RegistryKey key, string propKey, string permadbClsid, string? createdFlag, params string[] backupNames)
+            {
+                string[]? restored = null;
+                foreach (var bName in backupNames)
+                {
+                    var raw = key.GetValue(bName);
+                    if (raw is string[] arr)
+                    {
+                        restored = arr.Where(s => !string.IsNullOrWhiteSpace(s) && !string.Equals(s, permadbClsid, StringComparison.OrdinalIgnoreCase)).ToArray();
+                        break;
+                    }
+                    if (raw is string s && !string.IsNullOrWhiteSpace(s) && !string.Equals(s, permadbClsid, StringComparison.OrdinalIgnoreCase))
+                    {
+                        restored = new[] { s };
+                        break;
+                    }
+                }
+
+                if (restored != null && restored.Length > 0)
+                {
+                    key.SetValue(propKey, restored, RegistryValueKind.MultiString);
+                }
+                else if (key.GetValue(propKey) is string[] current)
+                {
+                    var cleaned = current.Where(s => !string.IsNullOrWhiteSpace(s) && !string.Equals(s, permadbClsid, StringComparison.OrdinalIgnoreCase)).ToArray();
+                    if (cleaned.Length != current.Length)
+                    {
+                        if (cleaned.Length > 0) key.SetValue(propKey, cleaned, RegistryValueKind.MultiString);
+                        else try { key.DeleteValue(propKey, false); } catch { }
+                    }
+                    else if (createdFlag != null && key.GetValue(createdFlag) != null && cleaned.Length == 0)
+                    {
+                        try { key.DeleteValue(propKey, false); } catch { }
+                    }
+                }
+
+                foreach (var bName in backupNames)
+                {
+                    try { key.DeleteValue(bName, false); } catch { }
+                }
+                if (createdFlag != null)
+                {
+                    try { key.DeleteValue(createdFlag, false); } catch { }
+                }
+            }
+
+            static void RestoreOrCleanSfxModes(RegistryKey key, string pkeySfxModes, string nullModeGuid, bool hasOemSfx)
+            {
+                if (key.GetValue("PermadB_Backup_SFXModes") is string[] backupModes)
+                {
+                    var cleaned = backupModes.Where(m => !string.IsNullOrWhiteSpace(m) && !string.Equals(m, nullModeGuid, StringComparison.OrdinalIgnoreCase)).ToArray();
+                    if (cleaned.Length > 0) key.SetValue(pkeySfxModes, cleaned, RegistryValueKind.MultiString);
+                    else try { key.DeleteValue(pkeySfxModes, false); } catch { }
+                    try { key.DeleteValue("PermadB_Backup_SFXModes", false); } catch { }
+                    try { key.DeleteValue("PermadB_Created_SFXModes", false); } catch { }
+                    return;
+                }
+
+                bool hadCreatedFlag = key.GetValue("PermadB_Created_SFXModes") != null;
+                if (!hasOemSfx && hadCreatedFlag)
+                {
+                    try { key.DeleteValue(pkeySfxModes, false); } catch { }
+                    try { key.DeleteValue("PermadB_Created_SFXModes", false); } catch { }
+                    return;
+                }
+
+                if (hadCreatedFlag)
+                {
+                    try { key.DeleteValue("PermadB_Created_SFXModes", false); } catch { }
+                }
+
+                if (key.GetValue(pkeySfxModes) is string[] currentModes &&
+                    currentModes.Any(m => string.Equals(m, nullModeGuid, StringComparison.OrdinalIgnoreCase)))
+                {
+                    var cleaned = currentModes.Where(m => !string.IsNullOrWhiteSpace(m) && !string.Equals(m, nullModeGuid, StringComparison.OrdinalIgnoreCase)).ToArray();
+                    if (cleaned.Length > 0) key.SetValue(pkeySfxModes, cleaned, RegistryValueKind.MultiString);
+                    else try { key.DeleteValue(pkeySfxModes, false); } catch { }
                 }
             }
         }
